@@ -1,28 +1,76 @@
 #!/bin/sh
+set -e
+# Mosaico installation script.
 #
-# This script installs Mosaico (mosaicod + embedded PostgreSQL) using
-# system-level Podman containers supervised by systemd (via Quadlet).
+# This script is intended as a convenient way to get Mosaico running on a
+# single machine for evaluation or development. It installs mosaicod (the
+# Mosaico daemon) and an embedded PostgreSQL instance using system-level
+# Podman containers supervised by systemd (via Quadlet).
 #
-# Source code: https://github.com/mosaico-labs/mosaico
+# This script is not recommended for production environments. Before running
+# this script, make yourself familiar with potential risks and limitations,
+# and refer to the official documentation at https://docs.mosaico.dev.
 #
-# Usage:
+# The script:
 #
-#   $ curl -fsSL https://get.mosaico.dev | sh
+# - Requires `root` or `sudo` privileges to run.
+# - Attempts to detect your Linux distribution and installs Podman if missing.
+# - Installs dependencies without asking for confirmation.
+# - Sets up systemd Quadlet configurations in /etc/containers/systemd/.
+# - Generates a random PostgreSQL password on first run and reuses it on
+#   subsequent runs — it is never printed to the terminal or the log.
+# - Copies itself to /usr/local/bin/mosaico-installer for future management.
 #
-# Options:
+# Source code is available at https://github.com/mosaico-labs/mosaico
 #
-#   --uninstall      Stop and remove Mosaico services, leaving data in place
-#   --dry-run        Print commands without running them
-#   --version <tag>  Install a specific image tag (default: latest)
+# Usage
+# ==============================================================================
 #
-# Environment variables:
+# To install the latest stable version of Mosaico:
 #
-#   MOSAICO_VERSION  Same as --version
+# 1. download the script
 #
+#   $ curl -fsSL https://get.mosaico.dev -o install-mosaico.sh
+#
+# 2. verify the script's content
+#
+#   $ cat install-mosaico.sh
+#
+# 3. run the script with --dry-run to verify the steps it executes
+#
+#   $ sh install-mosaico.sh --dry-run
+#
+# 4. run the script either as root, or using sudo to perform the installation.
+#
+#   $ sudo sh install-mosaico.sh
+#
+# Command-line options
+# ==============================================================================
+#
+# --version <VERSION>
+# Use the --version option to install a specific version, for example:
+#
+#   $ sudo sh install-mosaico.sh --version 0.8.0
+#
+# --uninstall
+# Stops and removes the Mosaico services, leaving stored data in place:
+#
+#   $ sudo sh install-mosaico.sh --uninstall
+#   (or run `sudo mosaico-installer --uninstall` if already installed)
+#
+# --dry-run
+# Prints every command this script would run as root, without running any
+# of them or changing anything on the system.
+#
+# Environment variables
+# ==============================================================================
+#
+# MOSAICO_VERSION
+# Same as --version above, settable as an environment variable instead.
+#
+# ==============================================================================
 
 SCRIPT_VERSION="1.0.0"
-
-set -e
 
 # --- Configuration ---
 
@@ -45,7 +93,25 @@ while [ $# -gt 0 ]; do
 			shift
 			;;
 		-h|--help)
-			grep '^# ' "$0" | cut -c3-
+			cat <<-EOF
+			Mosaico Installer (v$SCRIPT_VERSION)
+
+			This script installs Mosaico (mosaicod + embedded PostgreSQL) using
+			system-level Podman containers supervised by systemd (via Quadlet).
+			
+			Usage:
+			  $ curl -fsSL https://get.mosaico.dev | sh
+			  $ mosaico-installer [options]
+			
+			Options:
+			  -h, --help       Show this help message and exit
+			  --uninstall      Stop and remove Mosaico services, leaving data in place
+			  --dry-run        Print commands without running them
+			  --version <tag>  Install a specific image tag (default: latest)
+			
+			Environment variables:
+			  MOSAICO_VERSION  Same as --version
+			EOF
 			exit 0
 			;;
 		--*)
