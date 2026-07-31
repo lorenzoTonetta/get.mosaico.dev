@@ -269,8 +269,11 @@ start_user_service() {
 	fi
 
 	echo
-	fatal "$name failed to start. Recent container logs:"
-	$sh_c "podman logs --tail 40 $container" 2>&1 | tee -a "$LOG_FILE" >&2
+	printf "${RED}Error:${RESET} %s failed to start. Diagnostics:\n" "$name" >&2
+	echo
+	echo "${YELLOW}--- System Logs (journalctl) ---${RESET}" >&2
+	$sh_c "journalctl -u $name -n 20 --no-pager" 2>&1 | tee -a "$LOG_FILE" >&2
+	echo
 	exit 1
 }
 
@@ -294,7 +297,7 @@ start_postgres() {
 	done
 
 	echo
-	fatal "PostgreSQL did not become ready in time. Recent container logs:"
+	printf "${RED}Error:${RESET} PostgreSQL did not become ready in time. Container logs:\n" >&2
 	$sh_c "podman logs --tail 40 mosaico-postgres" 2>&1 | tee -a "$LOG_FILE" >&2
 	exit 1
 }
