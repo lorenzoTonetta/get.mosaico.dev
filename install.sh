@@ -1303,14 +1303,16 @@ Volume=$TLS_DIR:/certs:ro,Z"
 }
 
 # Installs the host-side CLI shim, which makes `mosaicod ...` on the host behave
-# like a native binary by forwarding into the container. It deliberately does no
-# container health check, so CLI commands can be issued whether or not the
-# daemon is up, and it re-injects the installer's env file so the CLI sees the
-# same configuration as the daemon.
+# like a native binary by forwarding into the container, re-injecting the
+# installer's env file so the CLI sees the same configuration as the daemon.
 #
-# It must be invoked as root: the containers belong to root's podman, and a
-# rootless podman has a separate container namespace where the daemon does not
-# exist. See the ENVIRONMENT note in the man page.
+# The work itself needs root — the containers belong to root's podman, and the
+# env file is readable only by root — but the wrapper re-executes itself under
+# sudo instead of refusing, so `mosaicod ...` works from an unprivileged shell.
+# See the COMMANDS section of the man page.
+#
+# There is no container health check, and none is possible: `podman exec` needs a
+# running container, so the CLI only works while the daemon is up.
 install_cli_wrapper() {
 	step_line "Creating CLI wrapper in $CLI_WRAPPER"
 
@@ -1326,20 +1328,36 @@ install_cli_wrapper() {
 	set -e
 
 	ENV_FILE="/var/lib/mosaico/secrets/mosaicod.env"
+	SELF="/usr/local/bin/mosaicod"
 
-	# 1. TTY handling based on execution environment
+	# 1. Re-exec under sudo when called unprivileged. Without this, podman would
+	#    resolve the container name in the caller's own rootless namespace, where
+	#    the daemon does not exist, and report it as missing even while the daemon
+	#    is running — an error that says nothing about the real problem. The full
+	#    path is used because sudo's secure_path excludes /usr/local/bin on Fedora
+	#    and RHEL. No loop guard is needed: sudo is invoked without -u, so the
+	#    re-executed copy always passes this check.
+	if [ "$(id -u)" -ne 0 ]; then
+	    if ! command -v sudo >/dev/null 2>&1; then
+	        echo "mosaicod: needs root privileges, and sudo was not found" >&2
+	        exit 1
+	    fi
+	    exec sudo -- "$SELF" "$@"
+	fi
+
+	# 2. TTY handling based on execution environment
 	TTY_ARGS=""
 	if [ -t 0 ] && [ -t 1 ]; then
 	    TTY_ARGS="-it"
 	fi
 
-	# 2. Load environment variables dynamically from the installer's env file
+	# 3. Load environment variables dynamically from the installer's env file
 	ENV_ARGS=""
 	if [ -f "$ENV_FILE" ]; then
 	    ENV_ARGS="--env-file=$ENV_FILE"
 	fi
 
-	# 3. Forward execution to podman exec with loaded environment
+	# 4. Forward execution to podman exec with loaded environment
 	exec podman exec $TTY_ARGS $ENV_ARGS mosaicod mosaicod "$@"
 	WRAPPER_EOF
 	as_root "chmod +x $CLI_WRAPPER"
@@ -1387,12 +1405,13 @@ install_man_page() {
 	.B mosaicod --help
 	for the commands the installed version supports.
 	.IP
-	Run it as root: the containers belong to root's Podman, and a rootless Podman
-	has its own separate set of containers where the daemon does not exist. Note
-	that on distributions whose \fBsudo\fR \fIsecure_path\fR excludes
-	\fI/usr/local/bin\fR (Fedora and RHEL among them) plain
-	\fBsudo mosaicod\fR reports "command not found": use
-	\fBsudo -i mosaicod\fR or the full path $CLI_WRAPPER.
+	The work needs root, because the containers belong to root's Podman and the
+	environment file is readable only by root, but you do not have to ask for it:
+	called from an unprivileged shell the wrapper re-executes itself through
+	\fBsudo\fR, so \fBmosaicod\fR works as an ordinary command and prompts for a
+	password if sudo asks for one. To drop that prompt, grant the command
+	\fINOPASSWD\fR in a \fI/etc/sudoers.d\fR entry. It forwards into a running
+	container, so it reports the container as missing when the daemon is down.
 	.TP
 	.B mosaico-installer \fR[\fIoptions\fR]
 	A copy of the installation script, kept at $INSTALLER_PATH. Use it to
