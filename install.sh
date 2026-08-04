@@ -59,7 +59,7 @@ set -e
 #   --store-backend obj  requires  --obj-endpoint, --obj-bucket,
 #                                  --obj-access-key, --obj-secret-key
 #   --store-backend fs   requires  --fs-dir
-#   --enable-tls         requires  --domain, --tls-cert, --tls-key
+#   --enable-tls         requires  --domain
 #
 # In an interactive session you may pass any subset of a group: whatever is
 # missing is asked for at the prompt. With -y the run aborts with a list of the
@@ -99,17 +99,26 @@ set -e
 # is `obj`.
 #
 # --enable-tls
-# Serves gRPC over TLS using a certificate and a private key that you provide.
-# mosaicod does not issue certificates itself, so --domain, --tls-cert and
-# --tls-key are all required; obtain the material however you like (certbot, an
-# internal CA, a corporate PKI). Default: disabled.
+# Serves gRPC over TLS. mosaicod does not issue certificates itself, so the
+# installer obtains one from Let's Encrypt with certbot and keeps it renewed,
+# unless you pass a certificate of your own with --tls-cert / --tls-key.
+# --domain is required either way. Default: disabled.
+#
+# Port 443 has to be open for the TLS challenge.
+#
+# Renewal is left to the certbot timer the distribution ships. The installer adds
+# a deploy hook in /etc/letsencrypt/renewal-hooks/deploy/ that copies each
+# renewed certificate into /var/lib/mosaico/secrets/tls/ and restarts
+# mosaicod.service, because the daemon reads the material only at startup.
 #
 # --tls-cert <PATH>
 # --tls-key <PATH>
-# Host paths of the PEM-encoded certificate chain and of its private key. Both
-# are copied into /var/lib/mosaico/secrets/tls/ and mounted read-only into the
-# container. To install renewed certificates, replace those two files and run
-# `systemctl restart mosaicod.service`.
+# Host paths of the PEM-encoded certificate chain and of its private key, to use
+# material you already hold (an internal CA, a corporate PKI) instead of Let's
+# Encrypt. Give both or neither. They are copied into
+# /var/lib/mosaico/secrets/tls/ and mounted read-only into the container; no
+# renewal hook is installed for them, so to install a renewed certificate replace
+# those two files and run `systemctl restart mosaicod.service`.
 #
 # --domain <FQDN>
 # Fully qualified domain name served by Mosaico, for example
@@ -125,9 +134,22 @@ set -e
 # client then needs a key. Default: disabled with -y, asked for (and suggested)
 # in an interactive session.
 #
-# --cleanup
-# Enables the automated data retention routine that prunes obsolete store files.
-# Default: disabled. See https://docs.mosaico.dev/config/cleanup
+# --no-cleanup
+# Turns off the automated data retention routine that prunes obsolete store
+# files. The routine runs by default, so this is the only switch it has: there is
+# nothing for an --enable flag to turn on. Declining it writes
+# MOSAICOD_CLEANUP_TIME_INTERVAL=0 explicitly, because a missing interval is what
+# makes mosaicod fall back to running the routine on its own schedule.
+# See https://docs.mosaico.dev/config/cleanup
+#
+# --sdk
+# Installs the mosaicolabs Python SDK into a virtual environment at /opt/mosaico,
+# created with the host's python3. Nothing is installed into the system
+# interpreter: recent Debian and Fedora refuse that under PEP 668, and where they
+# do not it leaves pip and the distribution's package manager owning the same
+# files. The SDK needs Python 3.10 or newer; on Debian and Ubuntu the python3-venv
+# package is installed too, since their python3 ships without ensurepip.
+# Activate it with `. /opt/mosaico/bin/activate`. Default: not installed.
 #
 # --cleanup-retention <DURATION>
 # How long obsolete files are kept before being deleted, for example 7d, 14d or
@@ -143,11 +165,14 @@ set -e
 #
 #   $ sudo sh install-mosaico.sh --version 0.6.0
 #
-# The default is pinned rather than `latest` because this installer generates a
-# command line and a set of environment variables that are specific to a
-# mosaicod release: 0.6.0 replaces the `run` subcommand with `server`, moves the
-# cleanup routine into its own subcommand and changes the API key permission
-# model.
+# The default is currently the floating `latest` tag, which is a stopgap: no
+# stable tag of the 0.5 line was ever published, so there is nothing to pin to.
+# It should go back to a version tag as soon as one exists, because this installer
+# generates a command line and a set of environment variables specific to one
+# mosaicod release. 0.6.0 in particular renames the `run` subcommand to `server`,
+# moves the cleanup routine into a subcommand of its own and changes the API key
+# permission model, so the moment `latest` starts pointing at 0.6.x the generated
+# unit stops working. See DEFAULT_MOSAICO_VERSION.
 #
 # --uninstall
 # Stops and removes the Mosaico services, the installed binaries and the man
@@ -183,6 +208,11 @@ TLS_DIR="$SECRETS_DIR/tls"
 TLS_CERT_IN_CONTAINER="/certs/cert.pem"
 TLS_KEY_IN_CONTAINER="/certs/key.pem"
 QUADLET_DIR="/etc/containers/systemd"
+# certbot's own layout. live/ holds symlinks into archive/, which is why the
+# installer copies the material out rather than mounting either directory.
+LE_DIR="/etc/letsencrypt"
+RENEWAL_HOOK_DIR="$LE_DIR/renewal-hooks/deploy"
+RENEWAL_HOOK="$RENEWAL_HOOK_DIR/mosaico.sh"
 # The generated command line and environment variables track one mosaicod
 # release: change this together with the flags in write_quadlets and the keys in
 # write_secrets, never independently. Left on the floating tag because no stable
@@ -194,6 +224,13 @@ MOSAICO_VERSION="${MOSAICO_VERSION:-$DEFAULT_MOSAICO_VERSION}"
 POSTGRES_IMAGE="docker.io/library/postgres:18"
 MOSAICOD_PORT="6726"
 CLI_WRAPPER="/usr/local/bin/mosaicod"
+# The Python SDK goes in a virtual environment of its own rather than into the
+# system interpreter: pip installing into a distribution's python3 fights the
+# package manager, and on recent Debian and Fedora it is refused outright
+# (PEP 668). The directory is named for the environment, so the prompt reads
+# "(mosaico)" once activated.
+SDK_VENV="/opt/mosaico"
+SDK_PACKAGE="mosaicolabs"
 INSTALLER_PATH="/usr/local/bin/mosaico-installer"
 MAN_DIR="/usr/local/share/man"
 MAN_PAGE="$MAN_DIR/man7/mosaico.7"
@@ -201,6 +238,13 @@ MAN_LINK_CLI="$MAN_DIR/man1/mosaicod.1"
 MAN_LINK_INSTALLER="$MAN_DIR/man8/mosaico-installer.8"
 DOCS_URL="https://docs.mosaico.dev"
 CLEANUP_DOCS_URL="https://docs.mosaico.dev/config/cleanup"
+# Shown to the user, never applied: the values themselves stay in mosaicod, and
+# leaving MOSAICOD_CLEANUP_* out of the environment file is what lets the daemon
+# use them. This string only lets the prompt say what "the defaults" are instead
+# of asking the user to approve values it will not name — so if the daemon's
+# defaults change, this line is stale but the installed behaviour is still right.
+# It mirrors mosaicod's params.rs.
+CLEANUP_DEFAULT_HINT="frames kept 1d, cleanup every 1d"
 LOG_FILE="/tmp/mosaico-install-$(id -u).log"
 : > "$LOG_FILE" 2>/dev/null || LOG_FILE="$(mktemp -t mosaico-install.XXXXXX)"
 
@@ -281,14 +325,24 @@ ENABLE_TLS=0;                 ENABLE_TLS_SET=0
 TLS_CERT="";                  TLS_CERT_SET=0
 TLS_KEY="";                   TLS_KEY_SET=0
 DOMAIN="";                    DOMAIN_SET=0
+# Fixed, not an option: it is the address Let's Encrypt notifies about expiring
+# certificates, and it belongs to whoever maintains Mosaico rather than to the
+# operator running the installer.
+CERTBOT_EMAIL="info@mosaico.dev"
+# Derived in apply_pairings, not passed by the user: TLS with no certificate of
+# its own is the signal to obtain one from Let's Encrypt.
+USE_CERTBOT=0
 API_KEY=0;                    API_KEY_SET=0
-CLEANUP=0;                    CLEANUP_SET=0
+# On by default: an installation that never reclaims space fills its disk, which
+# is a worse first experience than frames being pruned. --no-cleanup opts out.
+CLEANUP=1;                    CLEANUP_SET=0
 # Left empty on purpose: when the user does not pick a value, no
 # MOSAICOD_CLEANUP_* key is written and mosaicod applies its own default. The
 # installer deliberately does not restate those defaults, so it never has to be
 # kept in sync with the daemon — see $CLEANUP_DOCS_URL.
 CLEANUP_RETENTION="";         CLEANUP_RETENTION_SET=0
 CLEANUP_INTERVAL="";          CLEANUP_INTERVAL_SET=0
+SDK=0;                        SDK_SET=0
 
 usage() {
 	cat <<-EOF
@@ -319,30 +373,41 @@ usage() {
 	      --obj-secret-key <key>      Object store secret key
 
 	TLS options:
-	      --enable-tls                Serve over TLS (default: off). mosaicod does
-	                                  not issue certificates: provide your own
-	      --tls-cert <path>           PEM certificate chain, required with TLS
-	      --tls-key <path>            PEM private key, required with TLS
+	      --enable-tls                Serve over TLS (default: off). A certificate
+	                                  is obtained from Let's Encrypt with certbot,
+	                                  and renewed automatically, unless you pass
+	                                  one of your own
 	      --domain <fqdn>             Name the certificate is issued for,
-	                                  required with TLS
+	                                  always required with TLS
+	      --tls-cert <path>           PEM certificate chain, to use a certificate
+	      --tls-key <path>            of your own instead of Let's Encrypt
+	                                  (both together, or neither)
+
+	  Port 443 has to be open for the TLS challenge.
 
 	Security options:
 	      --api-key                   Create a master API key on first run and
 	                                  require API keys from every client
 
 	Data retention options:
-	      --cleanup                   Enable the automated cleanup routine
+	      --no-cleanup                Do not run the automated cleanup routine
+	                                  (default: it runs)
 	      --cleanup-retention <dur>   How long frames are kept
 	      --cleanup-time-interval <dur>
 	                                  How often cleanup runs
 	                                  Both fall back to the mosaicod defaults:
 	                                  $CLEANUP_DOCS_URL
 
+	SDK options:
+	      --sdk                       Install the $SDK_PACKAGE Python SDK into a
+	                                  virtual environment at $SDK_VENV
+	                                  (default: not installed)
+
 	Paired options — with -y all of a group must be given, interactively the
 	missing ones are asked for:
 	      --store-backend obj  ->  --obj-endpoint, --obj-bucket,
 	                               --obj-access-key, --obj-secret-key
-	      --enable-tls         ->  --domain, --tls-cert, --tls-key
+	      --enable-tls         ->  --domain
 
 	Environment variables:
 	  NON_INTERACTIVE   Same as --yes
@@ -419,13 +484,18 @@ parse_args() {
 			--domain) require_value "$@"; DOMAIN="$2"; DOMAIN_SET=1; shift ;;
 			--domain=*) DOMAIN="${1#*=}"; DOMAIN_SET=1 ;;
 
+
 			# --generate-api-key is an accepted alias for --api-key.
 			--api-key|--generate-api-key) API_KEY=1; API_KEY_SET=1 ;;
 			--api-key=*|--generate-api-key=*) API_KEY="$(to_bool "${1#*=}")"; API_KEY_SET=1 ;;
 
-			# --enable-cleanup is an accepted alias for --cleanup.
-			--cleanup|--enable-cleanup) CLEANUP=1; CLEANUP_SET=1 ;;
-			--cleanup=*|--enable-cleanup=*) CLEANUP="$(to_bool "${1#*=}")"; CLEANUP_SET=1 ;;
+			# Only the opt-out exists: cleanup runs by default, so a flag asking for
+			# it would have nothing to turn on.
+			--no-cleanup|--disable-cleanup) CLEANUP=0; CLEANUP_SET=1 ;;
+
+			--sdk|--install-sdk) SDK=1; SDK_SET=1 ;;
+			--sdk=*|--install-sdk=*) SDK="$(to_bool "${1#*=}")"; SDK_SET=1 ;;
+			--no-sdk) SDK=0; SDK_SET=1 ;;
 
 			--cleanup-retention) require_value "$@"; CLEANUP_RETENTION="$2"; CLEANUP_RETENTION_SET=1; shift ;;
 			--cleanup-retention=*) CLEANUP_RETENTION="${1#*=}"; CLEANUP_RETENTION_SET=1 ;;
@@ -484,15 +554,21 @@ apply_pairings() {
 		fi
 	fi
 
-	if [ "$CLEANUP_SET" -eq 0 ]; then
+	# Which of the two TLS paths applies. Certificates supplied by hand win: an
+	# operator who already has material does not want the installer talking to a
+	# certificate authority, and a corporate PKI would not answer certbot's
+	# challenge anyway. Decided here so that validation, the summary and the
+	# install flow all read the same flag.
+	if [ "$ENABLE_TLS" -eq 1 ] && [ -z "$TLS_CERT" ] && [ -z "$TLS_KEY" ]; then
+		USE_CERTBOT=1
+	fi
+
+	# There is no enabling branch to mirror the TLS one: cleanup is already on, so
+	# passing a retention or an interval only refines it. The one contradiction
+	# worth reporting is asking to turn it off and tune it in the same run.
+	if [ "$CLEANUP" -eq 0 ]; then
 		if [ "$CLEANUP_RETENTION_SET" -eq 1 ] || [ "$CLEANUP_INTERVAL_SET" -eq 1 ]; then
-			CLEANUP=1
-			CLEANUP_SET=1
-			info "Cleanup options given — enabling the cleanup routine."
-		fi
-	elif [ "$CLEANUP" -eq 0 ]; then
-		if [ "$CLEANUP_RETENTION_SET" -eq 1 ] || [ "$CLEANUP_INTERVAL_SET" -eq 1 ]; then
-			warn "Cleanup is disabled; --cleanup-retention and --cleanup-time-interval are ignored."
+			warn "--no-cleanup given; --cleanup-retention and --cleanup-time-interval are ignored."
 		fi
 	fi
 }
@@ -516,6 +592,7 @@ is_valid_endpoint() {
 is_valid_domain() {
 	echo "$1" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9_-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9_-]*[A-Za-z0-9])?)+$'
 }
+
 
 is_valid_duration() {
 	echo "$1" | grep -Eq '^[1-9][0-9]*[hdwm]$'
@@ -623,8 +700,14 @@ validate_non_interactive() {
 	fi
 
 	if [ "$ENABLE_TLS" -eq 1 ]; then
-		if [ -z "$DOMAIN" ] || [ -z "$TLS_CERT" ] || [ -z "$TLS_KEY" ]; then
-			add_missing "TLS is enabled, which requires --domain <fqdn>, --tls-cert <path> and --tls-key <path>."
+		# The domain is the only thing that must be supplied: it is the name the
+		# certificate is issued for, and the name certbot proves control of. The
+		# certificate itself needs nothing else from the user.
+		if [ -z "$DOMAIN" ]; then
+			add_missing "TLS is enabled, which requires --domain <fqdn>."
+		fi
+		if [ "$USE_CERTBOT" -eq 0 ] && { [ -z "$TLS_CERT" ] || [ -z "$TLS_KEY" ]; }; then
+			add_missing "--tls-cert and --tls-key must be given together; pass neither to obtain a Let's Encrypt certificate instead."
 		fi
 	fi
 
@@ -770,8 +853,8 @@ section() {
 configure_interactive() {
 	info "Interactive configuration started. Press Enter to accept [default values]."
 
-	# --- [1/4] Storage ---
-	section "[1/4] Storage Configuration"
+	# --- [1/5] Storage ---
+	section "[1/5] Storage Configuration"
 	if [ "$STORE_BACKEND_SET" -eq 0 ]; then
 		tty_print "${BOLD}?${RESET} Choose storage backend:"
 		tty_print "  ${VIOLET}>${RESET} [1] Local Filesystem (fs)"
@@ -804,10 +887,10 @@ configure_interactive() {
 		[ "$OBJ_SECRET_KEY_SET" -eq 1 ] || OBJ_SECRET_KEY="$(ask_secret "Secret Key")"
 	fi
 
-	# --- [2/4] TLS & domain ---
-	section "[2/4] TLS & Domain Setup"
+	# --- [2/5] TLS & domain ---
+	section "[2/5] TLS & Domain Setup"
 	if [ "$ENABLE_TLS_SET" -eq 0 ]; then
-		if ask_yn "Do you want to configure TLS/HTTPS? (requires a certificate and private key you already have)" "n"; then
+		if ask_yn "Do you want to configure TLS/HTTPS?" "n"; then
 			ENABLE_TLS=1
 		else
 			ENABLE_TLS=0
@@ -817,20 +900,39 @@ configure_interactive() {
 		[ "$DOMAIN_SET" -eq 1 ] || DOMAIN="$(ask_required \
 			"Enter your fully qualified domain name (e.g., mosaico.example.com)" \
 			is_valid_domain "That does not look like a valid domain name.")"
-		[ "$TLS_CERT_SET" -eq 1 ] || TLS_CERT="$(ask_required \
-			"Path of the PEM certificate chain for $DOMAIN (e.g., /etc/ssl/mosaico/fullchain.pem)" \
-			is_readable_file "That is not an absolute path to a readable file.")"
-		[ "$TLS_KEY_SET" -eq 1 ] || TLS_KEY="$(ask_required \
-			"Path of the matching PEM private key (e.g., /etc/ssl/mosaico/privkey.pem)" \
-			is_readable_file "That is not an absolute path to a readable file.")"
+
+		# Only asked when neither path has been pinned on the command line. The
+		# suggested answer is the Let's Encrypt one, since an operator who already
+		# holds a certificate normally passes --tls-cert/--tls-key rather than
+		# arriving here.
+		if [ "$TLS_CERT_SET" -eq 0 ] && [ "$TLS_KEY_SET" -eq 0 ]; then
+			echo
+			echo "  A certificate can be obtained automatically from Let's Encrypt, or you"
+			echo "  can point the installer at one you already have."
+			echo "  ${BOLD}Automatic issuance needs port 443 open${RESET} for the TLS challenge."
+			if ask_yn "Obtain a certificate for $DOMAIN automatically with certbot?" "y"; then
+				USE_CERTBOT=1
+			else
+				USE_CERTBOT=0
+			fi
+		fi
+
+		if [ "$USE_CERTBOT" -eq 0 ]; then
+			[ "$TLS_CERT_SET" -eq 1 ] || TLS_CERT="$(ask_required \
+				"Path of the PEM certificate chain for $DOMAIN (e.g., /etc/ssl/mosaico/fullchain.pem)" \
+				is_readable_file "That is not an absolute path to a readable file.")"
+			[ "$TLS_KEY_SET" -eq 1 ] || TLS_KEY="$(ask_required \
+				"Path of the matching PEM private key (e.g., /etc/ssl/mosaico/privkey.pem)" \
+				is_readable_file "That is not an absolute path to a readable file.")"
+		fi
 	fi
 
-	# --- [3/4] Security ---
+	# --- [3/5] Security ---
 	#
 	# Note the asymmetry with -y: unattended runs default to *not* creating a
 	# key (--api-key opts in), while here the suggested answer is yes, because
 	# an evaluator following the prompts needs a key to talk to the daemon.
-	section "[3/4] Security & API Keys"
+	section "[3/5] Security & API Keys"
 	if [ "$API_KEY_SET" -eq 0 ]; then
 		if ask_yn "Do you want to generate an initial Master API Key for clients?" "y"; then
 			API_KEY=1
@@ -839,13 +941,20 @@ configure_interactive() {
 		fi
 	fi
 
-	# --- [4/4] Retention ---
-	section "[4/4] Data Retention & Cleanup"
+	# --- [4/5] Retention ---
+	#
+	# Stated before it is questioned: cleanup is on unless the user says otherwise,
+	# so the first prompt is the opt-out, and the values are only revisited once
+	# they have decided to keep the routine.
+	section "[4/5] Data Retention & Cleanup"
 	if [ "$CLEANUP_SET" -eq 0 ]; then
-		if ask_yn "Enable automated cleanup routine for old dataset frames?" "n"; then
-			CLEANUP=1
-		else
+		echo "  The cleanup routine prunes obsolete dataset frames and runs by default,"
+		echo "  with mosaicod's own settings: ${BOLD}$CLEANUP_DEFAULT_HINT${RESET}."
+		echo "  ${DIM}$CLEANUP_DOCS_URL${RESET}"
+		if ask_yn "Disable the automated cleanup routine?" "n"; then
 			CLEANUP=0
+		else
+			CLEANUP=1
 		fi
 	fi
 	if [ "$CLEANUP" -eq 1 ]; then
@@ -854,8 +963,7 @@ configure_interactive() {
 		# shortcut writes no MOSAICOD_CLEANUP_* value at all, which is what
 		# leaves mosaicod free to apply its own default.
 		if [ "$CLEANUP_RETENTION_SET" -eq 0 ] && [ "$CLEANUP_INTERVAL_SET" -eq 0 ]; then
-			tty_print "${BOLD}?${RESET} Use the default retention policy and cleanup interval? "
-			if ask_yn_raw "  ${DIM}(See docs for the current values: $CLEANUP_DOCS_URL)${RESET}" "y"; then
+			if ask_yn "Keep those default values?" "y"; then
 				CLEANUP_RETENTION_SET=1
 				CLEANUP_INTERVAL_SET=1
 			fi
@@ -866,6 +974,18 @@ configure_interactive() {
 		[ "$CLEANUP_INTERVAL_SET" -eq 1 ] || CLEANUP_INTERVAL="$(ask_required \
 			"How often should the cleanup run (e.g., 1d, 7d, 30d)" is_valid_duration \
 			"Use a number followed by h, d, w or m (e.g. 7d).")"
+	fi
+
+	# --- [5/5] Python SDK ---
+	section "[5/5] Python SDK"
+	if [ "$SDK_SET" -eq 0 ]; then
+		echo "  The Python SDK ($SDK_PACKAGE) is installed into a virtual environment"
+		echo "  at $SDK_VENV, leaving the system interpreter untouched."
+		if ask_yn "Install the Python SDK?" "n"; then
+			SDK=1
+		else
+			SDK=0
+		fi
 	fi
 }
 
@@ -897,8 +1017,12 @@ print_summary() {
 	fi
 	if [ "$ENABLE_TLS" -eq 1 ]; then
 		echo "  - TLS / Domain    : Enabled ($DOMAIN)"
-		echo "  - TLS Certificate : $TLS_CERT"
-		echo "  - TLS Private Key : $TLS_KEY"
+		if [ "$USE_CERTBOT" -eq 1 ]; then
+			echo "  - Certificate     : Let's Encrypt, obtained now and renewed automatically"
+		else
+			echo "  - TLS Certificate : $TLS_CERT"
+			echo "  - TLS Private Key : $TLS_KEY"
+		fi
 	else
 		echo "  - TLS / Domain    : Disabled (plain HTTP)"
 	fi
@@ -911,6 +1035,11 @@ print_summary() {
 		echo "  - Cleanup Routine : Enabled ($(cleanup_summary))"
 	else
 		echo "  - Cleanup Routine : Disabled"
+	fi
+	if [ "$SDK" -eq 1 ]; then
+		echo "  - Python SDK      : $SDK_PACKAGE in a venv at $SDK_VENV"
+	else
+		echo "  - Python SDK      : Not installed"
 	fi
 	echo "  - Image Version   : $MOSAICO_VERSION"
 	echo
@@ -925,9 +1054,12 @@ confirm_summary() {
 	echo
 }
 
+
 # Non-fatal sanity check: warn when the domain does not resolve to this host, so
 # that a name clients cannot use is caught here rather than at the first
-# connection attempt.
+# connection attempt. Left as a warning even when the certificate is about to be
+# obtained from Let's Encrypt: certbot reports the same problem in its own terms
+# a few steps later, and stopping the install here would only pre-empt it.
 check_domain_dns() {
 	[ "$ENABLE_TLS" -eq 1 ] && [ -n "$DOMAIN" ] || return 0
 
@@ -951,6 +1083,7 @@ check_domain_dns() {
 	done
 	warn "'$DOMAIN' resolves to $resolved, which does not match this host's addresses."
 }
+
 
 # --- Privilege escalation ---
 
@@ -1077,13 +1210,231 @@ setup_directories() {
 	fi
 }
 
+install_python_packages() {
+	pm="$(get_package_manager)"
+	case "$pm" in
+		# python3-venv is a separate package on Debian and Ubuntu: their python3
+		# ships with ensurepip stripped out, so `python3 -m venv` exists but
+		# produces an environment with no pip in it.
+		apt)
+			as_root "apt-get update -qq"
+			as_root "env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y -qq python3 python3-venv < /dev/null"
+			;;
+		dnf)
+			as_root "dnf install -y python3"
+			;;
+		*)
+			echo
+			fatal "unsupported distribution: neither apt-get nor dnf found."
+			;;
+	esac
+}
+
+# $SDK_PACKAGE declares requires_python >=3.10, so an older interpreter would
+# fail at pip time with a message about no matching distribution, which reads as
+# a network or naming problem rather than a version one. Checked up front.
+SDK_MIN_PYTHON="3.10"
+
+check_python() {
+	step "Checking Python for the SDK..."
+
+	if ! command_exists python3; then
+		step_ok "missing, installing"
+		install_python_packages
+		return
+	fi
+
+	if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+		step_ok "too old"
+		echo
+		fatal "$SDK_PACKAGE needs Python $SDK_MIN_PYTHON or newer, but python3 here is
+       $(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo unknown).
+       Install a newer interpreter, or re-run without --sdk and install the SDK
+       yourself in an environment of your choosing."
+	fi
+
+	# A present python3 does not imply a usable venv module: see the apt note in
+	# install_python_packages.
+	if ! python3 -m venv --help >/dev/null 2>&1; then
+		step_ok "venv module missing, installing"
+		install_python_packages
+		return
+	fi
+
+	step_ok "OK (v$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])'))"
+}
+
+# Installs the SDK in a virtual environment of its own, never into the system
+# interpreter: recent Debian and Fedora refuse that outright under PEP 668, and
+# where it is allowed it leaves pip and the distribution's package manager
+# managing the same files.
+install_sdk() {
+	[ "$SDK" -eq 1 ] || return 0
+
+	check_python
+
+	step_line "Installing the $SDK_PACKAGE SDK in $SDK_VENV"
+
+	if is_dry_run; then
+		echo "  ${DIM}(dry-run)${RESET} python3 -m venv $SDK_VENV"
+		echo "  ${DIM}(dry-run)${RESET} $SDK_VENV/bin/pip install --upgrade $SDK_PACKAGE"
+		return 0
+	fi
+
+	# The environment is only created when it is not already there, so re-running
+	# the installer keeps whatever else was pip installed into it. --upgrade is
+	# what makes the run meaningful in that case: a plain install would report the
+	# requirement as already satisfied and leave an old SDK in place.
+	if ! as_root_capture "test -x $SDK_VENV/bin/python && echo yes" | grep -q '^yes$'; then
+		as_root "python3 -m venv $SDK_VENV"
+	fi
+	as_root "$SDK_VENV/bin/pip install --quiet --upgrade pip"
+	as_root "$SDK_VENV/bin/pip install --quiet --upgrade $SDK_PACKAGE"
+}
+
+check_certbot() {
+	step "Checking certbot..."
+	if command_exists certbot; then
+		step_ok "OK"
+		return
+	fi
+	pm="$(get_package_manager)"
+	case "$pm" in
+		apt)
+			step_ok "missing, installing via apt"
+			as_root "apt-get update -qq"
+			as_root "env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y -qq certbot < /dev/null"
+			;;
+		dnf)
+			step_ok "missing, installing via dnf"
+			as_root "dnf install -y certbot"
+			;;
+		*)
+			echo
+			fatal "unsupported distribution: neither apt-get nor dnf found."
+			;;
+	esac
+}
+
+# Obtains the certificate and rewrites TLS_CERT/TLS_KEY to point at certbot's
+# copies, so everything downstream — install_tls_material, the summary, the
+# recorded configuration — is unaware of where the material came from.
+#
+# Port 443 has to be open for the TLS challenge.
+obtain_certificate() {
+	[ "$USE_CERTBOT" -eq 1 ] || return 0
+
+	check_certbot
+
+	# --keep-until-expiring is the one addition to the invocation: it reuses a
+	# certificate that is still valid instead of asking for another one. Without
+	# it, re-running the installer to change some unrelated setting would request a
+	# duplicate every time, and Let's Encrypt allows five per week per domain.
+	certbot_args="certonly --standalone -d $DOMAIN --non-interactive --agree-tos"
+	certbot_args="$certbot_args --email $CERTBOT_EMAIL --preferred-challenges http"
+	certbot_args="$certbot_args --keep-until-expiring"
+
+	step "Obtaining a certificate for $DOMAIN from Let's Encrypt..."
+
+	if is_dry_run; then
+		echo
+		echo "  ${DIM}(dry-run)${RESET} certbot $certbot_args"
+		TLS_CERT="$LE_DIR/live/$DOMAIN/fullchain.pem"
+		TLS_KEY="$LE_DIR/live/$DOMAIN/privkey.pem"
+		return 0
+	fi
+
+	# Where the log ends before certbot runs, so that a failure can show exactly
+	# what certbot printed and nothing else. Not /var/log/letsencrypt: that is the
+	# debug log, and its tail is a Python traceback whose last line is the only
+	# part that says what went wrong.
+	log_mark="$(wc -l < "$LOG_FILE" 2>/dev/null || echo 0)"
+
+	if $sh_c "certbot $certbot_args" >> "$LOG_FILE" 2>&1; then
+		step_ok "Done"
+	else
+		step_ok "failed"
+		echo
+		printf "${RED}Error:${RESET} certbot could not obtain a certificate for %s.\n" "$DOMAIN" >&2
+		echo >&2
+		echo "${YELLOW}--- certbot output ---${RESET}" >&2
+		sed -n "$((log_mark + 1)),\$p" "$LOG_FILE" >&2
+		echo >&2
+		echo "Full details: $LOG_FILE and /var/log/letsencrypt/letsencrypt.log" >&2
+		echo >&2
+		exit 1
+	fi
+
+	TLS_CERT="$LE_DIR/live/$DOMAIN/fullchain.pem"
+	TLS_KEY="$LE_DIR/live/$DOMAIN/privkey.pem"
+}
+
+# Bridges certbot's renewals to the container. Without this the renewal succeeds
+# in $LE_DIR and nothing else happens: the daemon keeps serving the copies made
+# at install time, and TLS breaks roughly ninety days later with no failure
+# anywhere to explain it.
+#
+# A deploy hook runs only when a certificate was actually replaced, so the
+# restart happens on renewal days and not on every check. Renewal itself is
+# already scheduled by the distribution's certbot package (a systemd timer, or a
+# cron entry on systems without one), so the installer only has to make sure the
+# timer is running where one exists.
+install_renewal_hook() {
+	[ "$USE_CERTBOT" -eq 1 ] || return 0
+
+	step_line "Installing the certificate renewal hook in $RENEWAL_HOOK"
+
+	if is_dry_run; then
+		echo "  ${DIM}(dry-run)${RESET} write $RENEWAL_HOOK and chmod 700"
+		echo "  ${DIM}(dry-run)${RESET} systemctl enable --now certbot.timer"
+		return 0
+	fi
+
+	as_root "install -d -m 755 $RENEWAL_HOOK_DIR"
+
+	# Quoted heredoc: resolved when the hook runs, except for the values the
+	# installer has to bake in, which are substituted below.
+	as_root "cat > $RENEWAL_HOOK" <<-HOOK_EOF
+	#!/bin/sh
+	# Generated by mosaico-installer v$SCRIPT_VERSION — do not edit by hand.
+	#
+	# Runs after certbot replaces a certificate. RENEWED_LINEAGE is set by certbot
+	# to the live directory of the certificate that was just renewed; the guard
+	# makes the hook a no-op for every other certificate on this host.
+	set -e
+
+	[ "\$RENEWED_LINEAGE" = "$LE_DIR/live/$DOMAIN" ] || exit 0
+
+	install -m 600 "\$RENEWED_LINEAGE/fullchain.pem" $TLS_DIR/cert.pem
+	install -m 600 "\$RENEWED_LINEAGE/privkey.pem" $TLS_DIR/key.pem
+
+	# The daemon reads the material once at startup, so it has to be restarted to
+	# pick up the new certificate.
+	systemctl restart mosaicod.service
+	HOOK_EOF
+
+	as_root "chmod 700 $RENEWAL_HOOK"
+
+	# Enabled rather than assumed: the package usually ships the timer enabled,
+	# but a minimal image may not have started it, and a renewal that never runs
+	# is the failure this whole function exists to prevent.
+	if $sh_c "systemctl list-unit-files certbot.timer" >> "$LOG_FILE" 2>&1; then
+		as_root_ignore_errors "systemctl enable --now certbot.timer"
+	fi
+}
+
 # Copies the certificate and the key into the secrets directory instead of
 # mounting them from wherever they live on the host. Bind-mounting them directly
 # would mean either relabelling files this installer does not own (breaking
 # whatever else reads them under SELinux) or leaving the container unable to read
-# them; a copy under $TLS_DIR is ours to label. The cost is that renewals do not
-# propagate on their own, which is why the two paths are stable and documented:
-# replace the files and restart the service.
+# them; a copy under $TLS_DIR is ours to label — and for a certbot certificate,
+# $LE_DIR/live holds symlinks into $LE_DIR/archive, so a mount would need both
+# directories to resolve.
+#
+# The cost is that renewals do not propagate on their own. For a certificate
+# obtained here that is handled by install_renewal_hook; for one supplied by
+# hand the two paths are stable and documented: replace the files and restart
+# the service.
 install_tls_material() {
 	[ "$ENABLE_TLS" -eq 1 ] || return 0
 
@@ -1212,10 +1563,13 @@ write_install_conf() {
 	TLS_CERT=$TLS_CERT
 	TLS_KEY=$TLS_KEY
 	DOMAIN=$DOMAIN
+	USE_CERTBOT=$(bool_str "$USE_CERTBOT")
+	CERTBOT_EMAIL=$CERTBOT_EMAIL
 	API_KEY=$(bool_str "$API_KEY")
 	CLEANUP=$(bool_str "$CLEANUP")
 	CLEANUP_RETENTION=$CLEANUP_RETENTION
 	CLEANUP_INTERVAL=$CLEANUP_INTERVAL
+	SDK=$(bool_str "$SDK")
 	EOF
 }
 
@@ -1280,8 +1634,8 @@ Volume=$FS_DIR:/data:Z"
 
 	if [ "$ENABLE_TLS" -eq 1 ]; then
 		# Read-only: the daemon only ever reads this material. No extra port is
-		# published — mosaicod does not issue certificates, so there is no ACME
-		# challenge to answer on port 80.
+		# published: the TLS challenge is answered by certbot on the host, not by
+		# anything inside this container, so nothing has to reach it.
 		container="$container
 Volume=$TLS_DIR:/certs:ro,Z"
 	fi
@@ -1434,12 +1788,29 @@ install_man_page() {
 	.PP
 	The daemon listens on port $MOSAICOD_PORT, on every address of the host.
 	.SH TLS
-	mosaicod does not issue certificates: the installer was given a certificate
-	chain and a private key, and copied them to \fI$TLS_DIR/cert.pem\fR and
-	\fI$TLS_DIR/key.pem\fR, mounted read-only into the container.
+	mosaicod does not issue certificates. Whatever their origin, the certificate
+	chain and the private key are copied to \fI$TLS_DIR/cert.pem\fR and
+	\fI$TLS_DIR/key.pem\fR, mounted read-only into the container, and read by the
+	daemon only at startup.
 	.PP
-	To install renewed certificates, overwrite those two files and restart the
-	service:
+	When the installer obtained the certificate from Let's Encrypt, renewal is
+	automatic. The certbot timer shipped by the distribution does the renewing, and
+	\fI$RENEWAL_HOOK\fR copies each renewed certificate into place and restarts the
+	service. Check that both halves are in order with:
+	.RS 4
+	.nf
+	systemctl list-timers certbot.timer
+	sudo certbot renew --dry-run
+	.fi
+	.RE
+	.PP
+	Renewal repeats the same challenge as the first issuance, so \fBport 443 has to
+	stay open for the TLS challenge\fR. A firewall rule added after installation is
+	the usual reason a renewal that used to work stops working.
+	.PP
+	For a certificate supplied with \fB--tls-cert\fR and \fB--tls-key\fR no hook is
+	installed, and renewal is yours to perform: overwrite the two files and restart
+	the service.
 	.RS 4
 	.nf
 	sudo install -m 600 fullchain.pem $TLS_DIR/cert.pem
@@ -1479,6 +1850,17 @@ install_man_page() {
 	Quadlet unit definitions (\fImosaicod.container\fR,
 	\fImosaico-postgres.container\fR, \fImosaico.network\fR) from which systemd
 	generates the services.
+	.TP
+	.I $SDK_VENV
+	Present only when the installer was run with \fB--sdk\fR: a Python virtual
+	environment holding the \fB$SDK_PACKAGE\fR SDK. Activate it with
+	\fB. $SDK_VENV/bin/activate\fR. Removed by \fB--uninstall\fR.
+	.TP
+	.I $RENEWAL_HOOK
+	Present only when the certificate came from Let's Encrypt. Run by certbot after
+	a renewal, it refreshes the copies under \fI$TLS_DIR\fR and restarts the
+	daemon. Removed by \fB--uninstall\fR; the certificate itself is left in
+	\fI$LE_DIR\fR, since other services on the host may be using it.
 	.PP
 	Dataset frames live either in the local directory recorded as \fBFS_DIR\fR in
 	\fIinstall.conf\fR, or in the configured object store bucket. The database
@@ -1701,6 +2083,14 @@ do_uninstall() {
 	as_root_ignore_errors "rm -f $QUADLET_DIR/mosaico-postgres.container $QUADLET_DIR/mosaicod.container $QUADLET_DIR/mosaico.network"
 	as_root_ignore_errors "systemctl daemon-reload"
 	as_root_ignore_errors "rm -f $CLI_WRAPPER"
+	# The hook only ever restarts mosaicod.service, so it is dead weight once the
+	# service is gone and would fail on every future renewal. The certificate
+	# itself is deliberately left in place: it may be in use by something else on
+	# this host, and revoking it is not this installer's call.
+	as_root_ignore_errors "rm -f $RENEWAL_HOOK"
+	# Only ever created by this installer, so removing it cannot take anything the
+	# user put there first — unlike the certificate above.
+	as_root_ignore_errors "rm -rf $SDK_VENV"
 	as_root_ignore_errors "rm -f $INSTALLER_PATH"
 	as_root_ignore_errors "rm -f $MAN_PAGE $MAN_LINK_CLI $MAN_LINK_INSTALLER"
 	if command_exists mandb; then
@@ -1784,17 +2174,32 @@ print_success() {
 
 	if [ "$ENABLE_TLS" -eq 1 ]; then
 		echo
-		echo "  TLS enabled with the certificate you provided, copied to:"
+		if [ "$USE_CERTBOT" -eq 1 ]; then
+			echo "  TLS enabled with a Let's Encrypt certificate, copied to:"
+		else
+			echo "  TLS enabled with the certificate you provided, copied to:"
+		fi
 		echo "    $TLS_DIR/cert.pem"
 		echo "    $TLS_DIR/key.pem"
-		echo "  ${DIM}Replace those two files and run 'systemctl restart mosaicod.service'"
-		echo "  to install renewed certificates.${RESET}"
+		if [ "$USE_CERTBOT" -eq 1 ]; then
+			echo "  ${DIM}Renewal is automatic, via certbot and $RENEWAL_HOOK.${RESET}"
+			echo "  ${YELLOW}Keep port 443 open${RESET} — every renewal repeats the TLS challenge."
+		else
+			echo "  ${DIM}Replace those two files and run 'systemctl restart mosaicod.service'"
+			echo "  to install renewed certificates.${RESET}"
+		fi
 	fi
 
 	if [ "$CLEANUP" -eq 1 ]; then
 		echo
 		echo "  Cleanup routine enabled — $(cleanup_summary)."
 		echo "  ${DIM}$CLEANUP_DOCS_URL${RESET}"
+	fi
+
+	if [ "$SDK" -eq 1 ]; then
+		echo
+		echo "  Python SDK ($SDK_PACKAGE) installed in $SDK_VENV:"
+		echo "    ${BOLD}. $SDK_VENV/bin/activate${RESET}"
 	fi
 
 	echo
@@ -1834,6 +2239,7 @@ do_install() {
 	check_podman
 	check_quadlet_support
 	setup_directories
+	obtain_certificate
 	install_tls_material
 	write_secrets
 	write_install_conf
@@ -1842,6 +2248,10 @@ do_install() {
 	start_postgres
 	start_mosaicod
 	create_master_api_key
+	# After the service exists and is running: the hook restarts it, so installing
+	# it earlier would write a hook pointing at a unit that is not there yet.
+	install_renewal_hook
+	install_sdk
 	install_installer
 	install_man_page
 
