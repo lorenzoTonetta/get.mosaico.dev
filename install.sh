@@ -183,10 +183,13 @@ TLS_DIR="$SECRETS_DIR/tls"
 TLS_CERT_IN_CONTAINER="/certs/cert.pem"
 TLS_KEY_IN_CONTAINER="/certs/key.pem"
 QUADLET_DIR="/etc/containers/systemd"
-# Pinned on purpose: the generated command line and environment variables track
-# one mosaicod release. Bump this together with the flags in write_quadlets and
-# the keys in write_secrets, never independently.
-DEFAULT_MOSAICO_VERSION="0.5.0"
+# The generated command line and environment variables track one mosaicod
+# release: change this together with the flags in write_quadlets and the keys in
+# write_secrets, never independently. Left on the floating tag because no stable
+# tag of the 0.5 line was ever published — the release workflow's tag filter did
+# not match v0.5.0 — so a pin would name an image that does not exist. Pin this
+# to a version tag as soon as one is on the registry.
+DEFAULT_MOSAICO_VERSION="latest"
 MOSAICO_VERSION="${MOSAICO_VERSION:-$DEFAULT_MOSAICO_VERSION}"
 POSTGRES_IMAGE="docker.io/library/postgres:18"
 MOSAICOD_PORT="6726"
