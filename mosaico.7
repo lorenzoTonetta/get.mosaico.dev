@@ -9,33 +9,46 @@
 .\" those constants means editing this page too; nothing checks that they agree.
 .TH MOSAICO 7 "" "mosaico-installer @SCRIPT_VERSION@" "Mosaico"
 .SH NAME
-mosaico \- the Mosaico installation on this host: commands, files and removal
+mosaico \- The Data Platform for Robotics and Physical AI
 .SH DESCRIPTION
-Mosaico runs as a system-level Podman container supervised by systemd through
-Quadlet: \fBmosaicod\fR, the Mosaico daemon. Its PostgreSQL database runs
-alongside it in a second container, \fBmosaico-postgres\fR, unless the
-installation was pointed at a PostgreSQL instance of your own — see
-\fBDATABASE\fR below. Everything was set up by \fBmosaico-installer\fR(8).
+Mosaico is a blazing-fast data platform designed to close the loop between
+physical world data and scalable, production-grade systems. Mosaico does one
+thing exceptionally well: it transforms monolithic sensor logs into a
+structured, queryable archive built for multi-modal data.
 .PP
-This page describes what the installer put on this machine. For the daemon
-itself, its configuration keys and its API, see the online documentation at
+Robotics and Physical AI systems produce sensor data, recorded or live, as
+single streams, several concurrent streams, or streams already interleaved
+across sensors in formats such as \fB.mcap\fR. mosaicod, the Mosaico daemon,
+ingests all of these into dataset frames organized as sequences and topics,
+and hands them back through an SDK that can query by sequence, by topic, by
+ontology, or by chaining filters together to correlate across sensor types.
+Ready-made ingestion pipelines for common robotics tasks, such as
+manipulation, are shipped as \fIAlchemies\fR.
+.PP
+On this host mosaicod is supervised by systemd as \fBmosaicod.service\fR — see
+\fBSERVICE MANAGEMENT\fR and \fBQUADLET\fR below for how — and keeps its
+metadata in PostgreSQL — see \fBDATABASE\fR below for that. Everything was set
+up by \fBmosaico-installer\fR(8).
+.PP
+This page describes what the installer put on this machine. For the daemon's
+concepts, configuration keys and API, see the online documentation at
 https://docs.mosaico.dev.
 .SH COMMANDS
 .TP
 .B mosaicod \fIcommand\fB ...
 Host wrapper around the daemon CLI, installed at /usr/local/bin/mosaicod. It
-forwards its arguments into the running \fBmosaicod\fR container, so it behaves
+forwards its arguments into the running \fBmosaicod\fR service, so it behaves
 like a native binary. Run
 .B mosaicod --help
 for the commands the installed version supports.
 .IP
-The work needs root, because the containers belong to root's Podman and the
+The work needs root, because the service belongs to root's Podman and the
 environment file is readable only by root, but you do not have to ask for it:
 called from an unprivileged shell the wrapper re-executes itself through
 \fBsudo\fR, so \fBmosaicod\fR works as an ordinary command and prompts for a
 password if sudo asks for one. To drop that prompt, grant the command
-\fINOPASSWD\fR in a \fI/etc/sudoers.d\fR entry. It forwards into a running
-container, so it reports the container as missing when the daemon is down.
+\fINOPASSWD\fR in a \fI/etc/sudoers.d\fR entry. It forwards into the running
+service, so it reports the service as missing when the daemon is down.
 .TP
 .B mosaico-installer \fR[\fIoptions\fR]
 A copy of the installation script, kept at /usr/local/bin/mosaico-installer. Use
@@ -44,7 +57,8 @@ tag or uninstall. Run
 .B mosaico-installer --help
 for the full list of options.
 .SH SERVICE MANAGEMENT
-The container is an ordinary systemd service, managed with the usual tools:
+\fBmosaicod.service\fR is an ordinary systemd service, managed with the usual
+tools:
 .RS 4
 .nf
 systemctl status mosaicod.service
@@ -53,8 +67,9 @@ journalctl -u mosaicod.service -f
 .fi
 .RE
 .PP
-The same applies to \fBmosaico-postgres.service\fR when the database is embedded.
-Container-level output is available through \fBpodman logs mosaicod\fR.
+The same applies to \fBmosaico-postgres.service\fR when the database is
+embedded. The systemd journal covers what mosaicod itself logs; for the raw
+output of the underlying Podman container, see \fBQUADLET\fR below.
 .PP
 The daemon listens on port 6726, on every address of the host.
 .SH DATABASE
@@ -64,42 +79,42 @@ mosaicod keeps its metadata in PostgreSQL, reached through the
 is in use was recorded as \fBPG_MODE\fR in \fI/var/lib/mosaico/install.conf\fR.
 .TP
 .B embedded
-The default. PostgreSQL runs as a second container, \fBmosaico-postgres\fR, on
-the internal \fBmosaico.network\fR, and is not published to the host: only
-mosaicod reaches it. The password is generated on the first run, kept in
-\fI/var/lib/mosaico/secrets/postgres_password\fR, reused by every later run and
-never printed. The data lives in the \fBmosaico-postgres-data\fR Podman volume.
+The default. PostgreSQL runs as \fBmosaico-postgres.service\fR and is not
+published to the host: only mosaicod reaches it. The password is generated on
+the first run, kept in \fI/var/lib/mosaico/secrets/postgres_password\fR, reused
+by every later run and never printed. The data lives in the
+\fBmosaico-postgres-data\fR Podman volume.
 .TP
 .B external
 A PostgreSQL instance you already run, given to the installer with
-\fB--pg-host\fR and friends. No database container is created and none is
+\fB--pg-host\fR and friends. No database service is created and none is
 supervised: the installer only writes the connection string. The database and the
 role have to exist before the installation, and the role needs enough privilege
 to create the schema mosaicod uses on first start. Backups, upgrades and
 availability of that instance stay yours.
 .PP
 An external instance running on this same host cannot be reached at
-\fI127.0.0.1\fR from inside the container — that address is the container's own
-loopback — so the installer rewrites a loopback host to
-\fIhost.containers.internal\fR, which Podman resolves to the host. For that to
-work PostgreSQL must listen on an address other than the host loopback
-(\fBlisten_addresses\fR in \fIpostgresql.conf\fR) and \fIpg_hba.conf\fR must
-accept connections from the container network. Passing the host's LAN address as
-\fB--pg-host\fR instead avoids the indirection altogether.
+\fI127.0.0.1\fR from mosaicod.service — that address is its own loopback — so
+the installer rewrites a loopback host to \fIhost.containers.internal\fR, which
+Podman resolves to the host. For that to work PostgreSQL must listen on an
+address other than the host loopback (\fBlisten_addresses\fR in
+\fIpostgresql.conf\fR) and \fIpg_hba.conf\fR must accept connections from
+mosaicod's network. Passing the host's LAN address as \fB--pg-host\fR instead
+avoids the indirection altogether.
 .PP
 Re-running the installer with \fB--pg-host\fR against an installation that had
-an embedded database stops the \fBmosaico-postgres\fR container and removes its
+an embedded database stops \fBmosaico-postgres.service\fR and removes its
 unit. The \fBmosaico-postgres-data\fR volume is deliberately left in place, so
 nothing is lost and switching back reuses the old database.
 .SH TLS
 mosaicod does not issue certificates. Whatever their origin, the certificate
 chain and the private key are copied to
 \fI/var/lib/mosaico/secrets/tls/cert.pem\fR and
-\fI/var/lib/mosaico/secrets/tls/key.pem\fR, mounted read-only into the container,
+\fI/var/lib/mosaico/secrets/tls/key.pem\fR, mounted read-only into mosaicod.service,
 and read by the daemon only at startup.
 .PP
 When the installer obtained the certificate from Let's Encrypt, renewal is
-automatic. The certbot timer shipped by the distribution does the renewing, and
+automatic. The certbot timer shipped by the distribution performs the renewal, and
 \fI/etc/letsencrypt/renewal-hooks/deploy/mosaico.sh\fR copies each renewed
 certificate into place and restarts the service. Check that both halves are in
 order with:
@@ -153,11 +168,6 @@ Generated secrets, readable by root only: the daemon environment file, the TLS
 material under \fItls/\fR, the PostgreSQL password and \fIpostgres.env\fR when
 the database is embedded and, when requested, the master API key.
 .TP
-.I /etc/containers/systemd
-Quadlet unit definitions (\fImosaicod.container\fR, \fImosaico.network\fR and,
-for an embedded database, \fImosaico-postgres.container\fR) from which systemd
-generates the services.
-.TP
 .I /opt/mosaico
 Present only when the installer was run with \fB--sdk\fR: a Python virtual
 environment holding the \fBmosaicolabs\fR SDK. Activate it with
@@ -171,24 +181,28 @@ in \fI/etc/letsencrypt\fR, since other services on the host may be using it.
 .PP
 Dataset frames live either in the local directory recorded as \fBFS_DIR\fR in
 \fIinstall.conf\fR, or in the configured object store bucket.
+.PP
+The unit files behind \fBmosaicod.service\fR and \fBmosaico-postgres.service\fR
+are covered separately in \fBQUADLET\fR below.
 .SH CONFIGURATION
 Configuration is passed to the daemon through
 \fI/var/lib/mosaico/secrets/mosaicod.env\fR, written by the installer. Re-running
 \fBmosaico-installer\fR is the supported way to change it; the generated
-PostgreSQL password and master API key are preserved across runs, and so are
-hand-made edits to that file only until the next run overwrites them.
+PostgreSQL password and master API key are preserved across runs. Hand-made
+edits to that file are preserved too, but only until the next run overwrites
+them.
 .PP
 Only the options given to the installer are written to that file, so any
 setting left out keeps the daemon's own default. The data retention values are
 documented at https://docs.mosaico.dev/config/cleanup.
 .PP
-The image tag is pinned by the installer rather than tracking \fIlatest\fR,
+The installer pins the image tag rather than letting it track \fIlatest\fR,
 because the generated command line and environment variables belong to one
 mosaicod release. Upgrade by re-running the installer with
 \fB--version\fR, not by pulling a newer image under the same unit.
 .SH UNINSTALLING
-To stop and remove the services, the containers, the Quadlet units, the two
-commands and this man page, leaving all stored data in place:
+To stop and remove the services, their Quadlet units (see \fBQUADLET\fR below),
+the two commands and this man page, leaving all stored data in place:
 .RS 4
 .nf
 sudo mosaico-installer --uninstall
@@ -209,6 +223,40 @@ sudo podman volume rm mosaico-postgres-data
 The exact commands, with the storage directory filled in, are printed by
 \fBmosaico-installer --uninstall\fR when it finishes. Data kept in an external
 object store, or in an external PostgreSQL instance, must be removed there.
+.SH QUADLET
+\fBmosaicod.service\fR and \fBmosaico-postgres.service\fR are not hand-written
+systemd units: systemd generates them at boot, through Podman Quadlet, from the
+unit files below.
+.TP
+.I /etc/containers/systemd/mosaicod.container
+Defines the Podman container backing \fBmosaicod.service\fR: image, port
+publication, mounts for the secrets and TLS material, and the environment file.
+.TP
+.I /etc/containers/systemd/mosaico.network
+Defines \fBmosaico.network\fR, the internal Podman network mosaicod and, when
+the database is embedded, mosaico-postgres share. It is not published to the
+host.
+.TP
+.I /etc/containers/systemd/mosaico-postgres.container
+Present only for an embedded database. Defines the Podman container backing
+\fBmosaico-postgres.service\fR, including the \fBmosaico-postgres-data\fR
+volume mount.
+.PP
+Hand edits to these files take effect only after \fBsystemctl daemon-reload\fR,
+and are undone the next time \fBmosaico-installer\fR runs, since it regenerates
+them from scratch; re-running the installer is the supported way to change what
+they contain.
+.PP
+Quadlet names each container after the service it backs, minus the
+\fB.service\fR suffix, so Podman's own view of it — image, mounts, raw
+stdout/stderr — is reachable directly:
+.RS 4
+.nf
+podman inspect mosaicod
+podman logs mosaicod
+podman logs mosaico-postgres
+.fi
+.RE
 .SH SEE ALSO
 .BR systemctl (1),
 .BR journalctl (1),
