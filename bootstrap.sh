@@ -1,19 +1,31 @@
 #!/bin/sh
 set -e
-# Mosaico bootstrap.
+# Mosaico install bootstrap.
 #
-# The single entry point every user runs, whatever the machine: it looks at the
-# operating system and hands over to the installer written for it, forwarding
-# its arguments untouched. This is the file https://get.mosaico.dev is meant to
-# serve, so the documented one-liner keeps working on any host:
+# This is the script served at https://get.mosaico.dev, the one that actually
+# runs behind the one-liner from the docs:
 #
 #   $ curl -fsSL https://get.mosaico.dev | sh
 #   $ curl -fsSL https://get.mosaico.dev | sh -s -- --dry-run
 #   $ curl -fsSL https://get.mosaico.dev | sudo sh -s -- -y --api-key
 #
-# Options, prompts and exit codes belong to the installers: `--help`,
-# `--dry-run`, `--uninstall` and the rest are passed through and documented
-# there.
+# What it does, in order:
+#
+#   1. Looks at `uname` to tell Linux from macOS. Anything else (Windows) is
+#      rejected, with a pointer to WSL2.
+#   2. Fetches the installer written for that system from this repository
+#      (install.sh on Linux, install-macos.sh on macOS), unless a copy is
+#      already sitting next to this file, which is what happens in a checkout
+#      instead of a `curl | sh`.
+#   3. Runs that installer with whatever arguments were passed to this script,
+#      and exits with its exit code.
+#
+# This script installs nothing by itself: all disk writes, prompts and options
+# belong to the installer it hands off to. See install.sh or install-macos.sh
+# for details, the full option list (`--help`), and uninstall steps.
+#
+# IMPORTANT: run with `--dry-run` first. It prints every step on either
+# platform without changing anything on disk.
 #
 # Environment variables
 # ==============================================================================

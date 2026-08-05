@@ -1,36 +1,33 @@
 #!/bin/sh
 set -e
-# Mosaico installation script.
+# Mosaico installation script for Linux.
 #
-# This script is intended as a convenient way to get Mosaico running on a
-# single machine for evaluation or development. It installs mosaicod (the
-# Mosaico daemon) using a system-level Podman container supervised by systemd
-# (via Quadlet), together with an embedded PostgreSQL instance in a second
-# container — or, if you already run PostgreSQL, pointed at that instead — and,
-# unless --no-cleanup is given, the data retention routine in a third one: since
-# mosaicod 0.6 that routine is a subcommand of its own rather than part of the
-# daemon.
+# Gets Mosaico running on a single machine, for evaluation or development. It
+# installs mosaicod (the Mosaico daemon) using a system-level Podman container
+# supervised by systemd (via Quadlet), together with an embedded PostgreSQL
+# instance in a second container (or, if you already run PostgreSQL, pointed
+# at that instead) and, unless --no-cleanup is given, the data retention
+# routine in a third one: since mosaicod 0.6 that routine is a subcommand of
+# its own rather than part of the daemon.
 #
-# This script is not recommended for production environments. Before running
-# this script, make yourself familiar with potential risks and limitations,
-# and refer to the official documentation at https://docs.mosaico.dev.
+# Not meant for a production deployment: see https://docs.mosaico.dev for that.
 #
 # The script:
 #
 # - Requires `root` or `sudo` privileges to run.
-# - Attempts to detect your Linux distribution and installs Podman if missing.
+# - Detects your Linux distribution (apt or dnf) and installs Podman if missing.
 # - Installs dependencies without asking for confirmation.
 # - Guides you through the configuration interactively, or runs fully
 #   unattended when `-y` / `--yes` is given.
 # - Sets up systemd Quadlet configurations in /etc/containers/systemd/.
-# - Generates a random PostgreSQL password on first run and reuses it on
-#   subsequent runs, it is never printed to the terminal or the log. Only for the
-#   embedded database: the credentials of an existing instance are asked for.
+# - For the embedded database, generates a random PostgreSQL password on first
+#   run and reuses it on every later one; it is never printed to the terminal
+#   or the log. For an existing instance, its credentials are asked for instead.
 # - Installs a host CLI wrapper at /usr/local/bin/mosaicod that forwards
 #   commands into the container.
 # - Copies itself to /usr/local/bin/mosaico-installer for future management.
 # - Installs a man page describing the installed commands, the file layout and
-#   the uninstall procedure — see `man mosaico`. The page is a file of its own,
+#   the uninstall procedure: see `man mosaico`. The page is a file of its own,
 #   mosaico.7, taken from the installer's own directory when the script was run
 #   from a checkout and downloaded from the repository otherwise. It is the only
 #   step that needs the network beyond the container images, and the only one
@@ -90,7 +87,7 @@ set -e
 # --port <PORT>
 # Port mosaicod serves gRPC on, published on the host under the same number.
 # Asked for in an interactive session and defaulted to 6726 otherwise, which is
-# mosaicod's own default and what the SDK and the published examples assume —
+# mosaicod's own default and what the SDK and the published examples assume;
 # change it when something else on this host already holds that port. Not to be
 # confused with --pg-port, which is the database's.
 #
@@ -98,12 +95,12 @@ set -e
 # Where mosaicod keeps its metadata. `embedded` runs PostgreSQL in a container of
 # its own, supervised by systemd, with a password this script generates: nothing
 # has to exist beforehand. `external` uses a PostgreSQL instance you already run
-# — on this host, on another machine or hosted — and creates no database
+# (on this host, on another machine or hosted) and creates no database
 # container at all. Default: embedded.
 #
 # `external` is not a migration: it points a fresh installation at an empty
 # database. Switching an existing installation over stops and removes the
-# embedded container and leaves its volume untouched, it does not move any data.
+# embedded container and leaves its volume untouched. No data is moved.
 #
 # --pg-host <HOST>
 # Host name or address of the existing PostgreSQL instance. Required when
@@ -113,7 +110,7 @@ set -e
 # A loopback address is rewritten to `host.containers.internal`, because
 # 127.0.0.1 inside the container is the container itself. PostgreSQL then has to
 # listen on something other than the host loopback and accept the container
-# network in pg_hba.conf — passing the host's LAN address avoids the indirection.
+# network in pg_hba.conf. Passing the host's LAN address avoids the indirection.
 #
 # --pg-port <PORT>
 # Port of the existing instance. Default: 5432.
@@ -188,7 +185,7 @@ set -e
 #
 # The key is created with `read|write|delete`, which since 0.6 is the whole set:
 # the `manage` permission was removed in favour of granular ones. Managing keys
-# is not a permission any more either — `mosaicod api-key` reaches the database
+# is not a permission any more either: `mosaicod api-key` reaches the database
 # directly, so it is running that command in the container that grants it.
 #
 # --no-cleanup
@@ -196,7 +193,7 @@ set -e
 # files. The routine runs by default, so this is the only switch it has: there is
 # nothing for an --enable flag to turn on. Since 0.6 the routine is a mosaicod
 # subcommand of its own rather than a thread inside the daemon, so declining it
-# simply means no mosaico-cleanup container is created — and re-running the
+# simply means no mosaico-cleanup container is created, and re-running the
 # installer with this flag removes one left by an earlier run.
 # See https://docs.mosaico.dev/config/cleanup
 #
@@ -212,7 +209,7 @@ set -e
 # --cleanup-retention <DURATION>
 # How long obsolete files are kept before being deleted, for example 7d, 14d or
 # 30d. Becomes --retention-duration on the cleanup container. When omitted, that
-# subcommand applies its own default —
+# subcommand applies its own default:
 # see https://docs.mosaico.dev/config/cleanup
 #
 # --cleanup-time-interval <DURATION>
@@ -229,7 +226,7 @@ set -e
 #
 # The default is 0.6.0-rc, pinned rather than floating: this installer generates a
 # command line and a set of environment variables specific to one mosaicod
-# release, and 0.6 changed all three of the things it depends on — `run` became
+# release, and 0.6 changed all three of the things it depends on: `run` became
 # `server`, the cleanup routine became a subcommand of its own with flags instead
 # of MOSAICOD_CLEANUP_* variables, and the `manage` API key permission was
 # replaced by the granular set. Passing a 0.5.x tag here produces units that
@@ -431,7 +428,7 @@ USE_CERTBOT=0
 API_KEY=0;                    API_KEY_SET=0
 CLEANUP=1;                    CLEANUP_SET=0
 # An unset retention becomes an omitted --retention-duration, so the subcommand
-# applies its own default — see $CLEANUP_DOCS_URL. The interval is the exception:
+# applies its own default: see $CLEANUP_DOCS_URL. The interval is the exception:
 # see CLEANUP_DEFAULT_INTERVAL_SECONDS.
 CLEANUP_RETENTION="";         CLEANUP_RETENTION_SET=0
 CLEANUP_INTERVAL="";          CLEANUP_INTERVAL_SET=0
@@ -514,7 +511,7 @@ usage() {
 	                                  virtual environment at $SDK_VENV
 	                                  (default: not installed)
 
-	Paired options — with -y all of a group must be given, interactively the
+	Paired options: with -y all of a group must be given, interactively the
 	missing ones are asked for:
 	      --postgres external  ->  --pg-host, --pg-password
 	      --store-backend obj  ->  --obj-endpoint, --obj-bucket,
@@ -692,7 +689,7 @@ apply_pairings() {
 		   [ "$PG_PASSWORD_SET" -eq 1 ] || [ "$PG_DB_SET" -eq 1 ]; then
 			PG_MODE="external"
 			PG_MODE_SET=1
-			info "PostgreSQL connection options given — selecting --postgres external."
+			info "PostgreSQL connection options given; selecting --postgres external."
 		elif [ "$PG_PORT_SET" -eq 1 ]; then
 			# The embedded database is not published to the host, so it has no port
 			# to move.
@@ -710,7 +707,7 @@ apply_pairings() {
 		   [ "$OBJ_ACCESS_KEY_SET" -eq 1 ] || [ "$OBJ_SECRET_KEY_SET" -eq 1 ]; then
 			STORE_BACKEND="obj"
 			STORE_BACKEND_SET=1
-			info "Object store options given — selecting --store-backend obj."
+			info "Object store options given; selecting --store-backend obj."
 		fi
 	elif [ "$STORE_BACKEND" = "fs" ]; then
 		if [ "$OBJ_ENDPOINT_SET" -eq 1 ] || [ "$OBJ_ACCESS_KEY_SET" -eq 1 ] ||
@@ -725,7 +722,7 @@ apply_pairings() {
 		if [ "$DOMAIN_SET" -eq 1 ] || [ "$TLS_CERT_SET" -eq 1 ] || [ "$TLS_KEY_SET" -eq 1 ]; then
 			ENABLE_TLS=1
 			ENABLE_TLS_SET=1
-			info "TLS options given — enabling TLS."
+			info "TLS options given; enabling TLS."
 		fi
 	elif [ "$ENABLE_TLS" -eq 0 ]; then
 		if [ "$DOMAIN_SET" -eq 1 ] || [ "$TLS_CERT_SET" -eq 1 ] || [ "$TLS_KEY_SET" -eq 1 ]; then
@@ -967,7 +964,7 @@ TTY="/dev/tty"
 
 # The permission bits say nothing about having a controlling terminal, so the
 # device is actually opened. The probe runs in a subshell because a redirection
-# failure on a special built-in is fatal in dash — which is the headless case this
+# failure on a special built-in is fatal in dash, which is the headless case this
 # function exists to detect.
 has_tty() {
 	[ -r "$TTY" ] && [ -w "$TTY" ] && ( exec < "$TTY" ) 2>/dev/null
@@ -1346,7 +1343,7 @@ print_summary() {
 confirm_summary() {
 	if ! ask_yn "Proceed with installation using these settings?" "y"; then
 		echo
-		info "Installation cancelled — nothing was changed."
+		info "Installation cancelled; nothing was changed."
 		exit 0
 	fi
 	echo
@@ -1367,7 +1364,7 @@ check_domain_dns() {
 	fi
 
 	if [ -z "$resolved" ]; then
-		warn "could not resolve '$DOMAIN' — clients will not reach Mosaico by that name until DNS is configured."
+		warn "could not resolve '$DOMAIN': clients will not reach Mosaico by that name until DNS is configured."
 		return 0
 	fi
 
@@ -1674,7 +1671,7 @@ install_renewal_hook() {
 	# Variables are resolved when the hook runs, except those substituted below.
 	as_root "cat > $RENEWAL_HOOK" <<-HOOK_EOF
 	#!/bin/sh
-	# Generated by mosaico-installer v$SCRIPT_VERSION — do not edit by hand.
+	# Generated by mosaico-installer v$SCRIPT_VERSION. Do not edit by hand.
 	#
 	# Runs after certbot replaces a certificate. certbot sets RENEWED_LINEAGE to the
 	# live directory of that certificate, so the guard below makes this hook a no-op
@@ -1702,7 +1699,7 @@ install_renewal_hook() {
 # Copied into the secrets directory rather than bind-mounted where they lie: a
 # mount would mean relabelling files this installer does not own under SELinux, and
 # $LE_DIR/live holds symlinks into $LE_DIR/archive, so both would have to be
-# mounted. The cost is that renewals do not propagate on their own —
+# mounted. The cost is that renewals do not propagate on their own:
 # install_renewal_hook covers the certbot case.
 install_tls_material() {
 	[ "$ENABLE_TLS" -eq 1 ] || return 0
@@ -1827,7 +1824,7 @@ PG_DB=$PG_DB"
 	fi
 
 	as_root "umask 022 && cat > $DATA_DIR/install.conf" <<-EOF
-	# Generated by mosaico-installer v$SCRIPT_VERSION — do not edit by hand.
+	# Generated by mosaico-installer v$SCRIPT_VERSION. Do not edit by hand.
 	MOSAICO_VERSION=$MOSAICO_VERSION
 	MOSAICOD_PORT=$MOSAICOD_PORT
 	$pg_record
@@ -1939,8 +1936,8 @@ Requires=mosaico-postgres.service"
 }
 
 # The cleanup routine is a separate process from 0.6 on. Same image, environment
-# file and store — it deletes frames from the store and reads the database to know
-# which ones — with no port and no certificate.
+# file and store (it deletes frames from the store and reads the database to know
+# which ones), with no port and no certificate.
 write_cleanup_quadlet() {
 	[ "$CLEANUP" -eq 1 ] || return 0
 
@@ -2009,8 +2006,8 @@ drop_cleanup_unit() {
 
 # Makes `mosaicod ...` behave like a native binary: it forwards into the container
 # and re-injects the env file, so the CLI sees the daemon's configuration. The work
-# needs root — the containers belong to root's podman and the env file is root-only
-# — and the wrapper escalates itself rather than refusing. It only works while the
+# needs root (the containers belong to root's podman and the env file is root-only),
+# and the wrapper escalates itself rather than refusing. It only works while the
 # daemon is up: `podman exec` needs a running container.
 install_cli_wrapper() {
 	step_line "Creating CLI wrapper in $CLI_WRAPPER"
@@ -2113,7 +2110,7 @@ install_man_page() {
 	# The only step allowed to fail without failing the installation: what the page
 	# describes is already installed, and the same text is online.
 	if ! _man_file="$(fetch_man_page)"; then
-		warn "could not obtain $MAN_PAGE_NAME from $MAN_PAGE_URL — 'man mosaico' will not be available. Everything else is installed; see $DOCS_URL."
+		warn "could not obtain $MAN_PAGE_NAME from $MAN_PAGE_URL: 'man mosaico' will not be available. Everything else is installed; see $DOCS_URL."
 		return 0
 	fi
 
@@ -2462,7 +2459,7 @@ print_success() {
 	if [ "$PG_MODE" = "external" ]; then
 		echo
 		echo "  Database: PostgreSQL at $PG_HOST:$PG_PORT/$PG_DB as $PG_USER"
-		echo "  ${DIM}Not managed by this installer — backups and upgrades are yours.${RESET}"
+		echo "  ${DIM}Not managed by this installer: backups and upgrades are yours.${RESET}"
 	fi
 
 	echo
@@ -2474,7 +2471,7 @@ print_success() {
 		# The daemon answers on every address of the host, so "no API key" means a
 		# reachable, unauthenticated endpoint.
 		echo
-		echo "  ${YELLOW}Note:${RESET} API keys are not required — anyone who can reach port"
+		echo "  ${YELLOW}Note:${RESET} API keys are not required: anyone who can reach port"
 		echo "        $MOSAICOD_PORT can read and write data. Re-run the installer with"
 		echo "        --api-key to require them."
 	fi
@@ -2490,7 +2487,7 @@ print_success() {
 		echo "    $TLS_DIR/key.pem"
 		if [ "$USE_CERTBOT" -eq 1 ]; then
 			echo "  ${DIM}Renewal is automatic, via certbot and $RENEWAL_HOOK.${RESET}"
-			echo "  ${YELLOW}Keep port 443 open${RESET} — every renewal repeats the TLS challenge."
+			echo "  ${YELLOW}Keep port 443 open${RESET}: every renewal repeats the TLS challenge."
 		else
 			echo "  ${DIM}Replace those two files and run 'systemctl restart mosaicod.service'"
 			echo "  to install renewed certificates.${RESET}"
@@ -2499,7 +2496,7 @@ print_success() {
 
 	if [ "$CLEANUP" -eq 1 ]; then
 		echo
-		echo "  Cleanup routine enabled — $(cleanup_summary)."
+		echo "  Cleanup routine enabled: $(cleanup_summary)."
 		echo "  ${DIM}It runs in its own container, supervised as mosaico-cleanup.service.${RESET}"
 		echo "  ${DIM}$CLEANUP_DOCS_URL${RESET}"
 	fi
@@ -2546,7 +2543,7 @@ do_install() {
 	is_dry_run && echo "${YELLOW}# --dry-run: no changes will be made${RESET}"
 
 	if [ "$user" != "root" ]; then
-		info "Not running as root — this script will use '$sh_c' for the steps that need it."
+		info "Not running as root: this script will use '$sh_c' for the steps that need it."
 		echo
 	fi
 
@@ -2577,7 +2574,7 @@ do_install() {
 
 	echo
 	if is_dry_run; then
-		echo "${YELLOW}Dry run complete — nothing was installed or changed.${RESET}"
+		echo "${YELLOW}Dry run complete: nothing was installed or changed.${RESET}"
 	else
 		print_success
 	fi

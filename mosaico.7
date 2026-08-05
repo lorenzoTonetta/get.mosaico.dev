@@ -23,9 +23,9 @@ ontology, or by chaining filters together to correlate across sensor types.
 Ready-made ingestion pipelines for common robotics tasks, such as
 manipulation, are shipped as \fIAlchemies\fR.
 .PP
-On this host mosaicod is supervised by systemd as \fBmosaicod.service\fR — see
-\fBSERVICE MANAGEMENT\fR and \fBQUADLET\fR below for how — and keeps its
-metadata in PostgreSQL — see \fBDATABASE\fR below for that. Everything was set
+On this host mosaicod is supervised by systemd as \fBmosaicod.service\fR (see
+\fBSERVICE MANAGEMENT\fR and \fBQUADLET\fR below for how) and keeps its
+metadata in PostgreSQL (see \fBDATABASE\fR below for that). Everything was set
 up by \fBmosaico-installer\fR(8).
 .PP
 This page describes what the installer put on this machine. For the daemon's
@@ -70,8 +70,8 @@ embedded. The systemd journal covers what mosaicod itself logs; for the raw
 output of the underlying Podman container, see \fBQUADLET\fR below.
 .PP
 The daemon listens on every address of the host, on the port recorded as
-\fBMOSAICOD_PORT\fR in \fI/var/lib/mosaico/install.conf\fR. That is 6726 — the
-port clients and the SDK assume — unless the installation was given \fB--port\fR.
+\fBMOSAICOD_PORT\fR in \fI/var/lib/mosaico/install.conf\fR. That is 6726, the
+port clients and the SDK assume, unless the installation was given \fB--port\fR.
 .SH DATABASE
 mosaicod keeps its metadata in PostgreSQL, reached through the
 \fBMOSAICOD_DB_URL\fR connection string in
@@ -94,7 +94,7 @@ to create the schema mosaicod uses on first start. Backups, upgrades and
 availability of that instance stay yours.
 .PP
 An external instance running on this same host cannot be reached at
-\fI127.0.0.1\fR from mosaicod.service — that address is its own loopback — so
+\fI127.0.0.1\fR from mosaicod.service: that address is its own loopback, so
 the installer rewrites a loopback host to \fIhost.containers.internal\fR, which
 Podman resolves to the host. For that to work PostgreSQL must listen on an
 address other than the host loopback (\fBlisten_addresses\fR in
@@ -148,7 +148,7 @@ releases was removed in favour of granular ones, so a key that grants all three
 is the closest equivalent.
 .PP
 Managing keys is not a permission. The commands below reach the database
-directly, so what they need is the ability to run them in the container — no key
+directly, so what they need is the ability to run them in the container: no key
 is presented, and one of these commands works even when enforcement is off:
 .RS 4
 .nf
@@ -201,7 +201,7 @@ Only the options given to the installer are written to that file, so any
 setting left out keeps the daemon's own default.
 .PP
 Retention is not configured there. The routine is a separate command, so its two
-values are flags on \fImosaico-cleanup.container\fR — \fB--time-interval\fR and
+values are flags on \fImosaico-cleanup.container\fR: \fB--time-interval\fR and
 \fB--retention-duration\fR, both in seconds. Re-run the installer with
 \fB--cleanup-time-interval\fR and \fB--cleanup-retention\fR to change them, or
 with \fB--no-cleanup\fR to remove the container altogether. The values are
@@ -259,8 +259,8 @@ them from scratch; re-running the installer is the supported way to change what
 they contain.
 .PP
 Quadlet names each container after the service it backs, minus the
-\fB.service\fR suffix, so Podman's own view of it — image, mounts, raw
-stdout/stderr — is reachable directly:
+\fB.service\fR suffix, so Podman's own view of it (image, mounts, raw
+stdout/stderr) is reachable directly:
 .RS 4
 .nf
 podman inspect mosaicod

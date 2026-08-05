@@ -5,19 +5,17 @@ set -e
 # The macOS counterpart of install.sh, reached through the platform bootstrap at
 # https://get.mosaico.dev. It installs mosaicod (the Mosaico daemon) as a Podman
 # container, together with an embedded PostgreSQL instance in a second container
-# — or, if you already run PostgreSQL, pointed at that instead — and, unless
+# (or, if you already run PostgreSQL, pointed at that instead) and, unless
 # --no-cleanup is given, the data retention routine in a third one: since mosaicod
 # 0.6 that routine is a subcommand of its own rather than part of the daemon.
 #
-# This script is not recommended for production environments. Before running
-# this script, make yourself familiar with potential risks and limitations,
-# and refer to the official documentation at https://docs.mosaico.dev.
+# Not meant for a production deployment: see https://docs.mosaico.dev for that.
 #
 # How this differs from the Linux installer
 # ==============================================================================
 #
 # macOS cannot run Linux containers itself, so Podman runs them inside a Linux
-# virtual machine of its own — a "podman machine". Everything below follows from
+# virtual machine of its own, a "podman machine". Everything below follows from
 # that, and from macOS having launchd instead of systemd:
 #
 # - Needs no root. The virtual machine, the containers and every file this script
@@ -26,7 +24,7 @@ set -e
 #
 # - $HOME is the only shared filesystem. A podman machine mounts the user's home
 #   directory into the virtual machine and nothing else, so a directory the
-#   containers have to see — the local frame storage, the TLS material — has to
+#   containers have to see (the local frame storage, the TLS material) has to
 #   live under $HOME. A path outside it would silently become an empty directory
 #   inside the virtual machine, which is why --fs-dir is rejected when it points
 #   elsewhere.
@@ -48,8 +46,8 @@ set -e
 #   that: the database lives in a Podman volume and the frames in a directory
 #   under $HOME, both of which outlive the containers.
 #
-# - No man page is installed. mosaico(7) documents the Linux layout — systemd
-#   units, Quadlet, /var/lib/mosaico — none of which exists here, so installing
+# - No man page is installed. mosaico(7) documents the Linux layout (systemd
+#   units, Quadlet, /var/lib/mosaico), none of which exists here, so installing
 #   it would describe a machine you are not on. The layout of this installation
 #   is printed at the end of the run and documented at https://docs.mosaico.dev.
 #
@@ -186,14 +184,14 @@ set -e
 #
 # The key is created with `read|write|delete`, which since 0.6 is the whole set:
 # the `manage` permission was removed in favour of granular ones. Managing keys is
-# not a permission any more either — `mosaicod api-key` reaches the database
+# not a permission any more either: `mosaicod api-key` reaches the database
 # directly, so it is running that command in the container that grants it.
 #
 # --no-cleanup
 # Turns off the automated data retention routine that prunes obsolete store
 # files. The routine runs by default. Since 0.6 it is a mosaicod subcommand of its
 # own rather than a thread inside the daemon, so declining it simply means no
-# mosaico-cleanup container is created — and re-running the installer with this
+# mosaico-cleanup container is created, and re-running the installer with this
 # flag removes one left by an earlier run.
 # See https://docs.mosaico.dev/config/cleanup
 #
@@ -226,7 +224,7 @@ set -e
 # --port <PORT>
 # Port mosaicod serves gRPC on, published on this Mac under the same number.
 # Asked for in an interactive session and defaulted to 6726 otherwise, which is
-# mosaicod's own default and what the SDK and the published examples assume —
+# mosaicod's own default and what the SDK and the published examples assume;
 # change it when something else already holds that port. Not to be confused with
 # --pg-port, which is the database's.
 #
@@ -248,7 +246,7 @@ set -e
 #
 # --uninstall
 # Stops and removes the containers, the LaunchAgent and the installed commands,
-# leaving stored data — the database volume, the frames, the secrets — in place.
+# leaving stored data (the database volume, the frames, the secrets) in place.
 # The podman machine is left alone as well, since it may hold other containers;
 # the command to remove it is printed at the end.
 #
@@ -498,7 +496,7 @@ usage() {
 	      --tls-key <path>            key, both required with TLS
 
 	  Certificates are not obtained for you on macOS: pass your own. Renewal is
-	  manual — replace the copies under $TLS_DIR and restart the container.
+	  manual: replace the copies under $TLS_DIR and restart the container.
 
 	Security options:
 	      --api-key                   Create a master API key on first run and
@@ -518,7 +516,7 @@ usage() {
 	                                  virtual environment at $SDK_VENV
 	                                  (default: not installed)
 
-	Paired options — with -y all of a group must be given, interactively the
+	Paired options: with -y all of a group must be given, interactively the
 	missing ones are asked for:
 	      --postgres external  ->  --pg-host, --pg-password
 	      --store-backend obj  ->  --obj-endpoint, --obj-bucket,
@@ -689,7 +687,7 @@ apply_pairings() {
 		   [ "$PG_PASSWORD_SET" -eq 1 ] || [ "$PG_DB_SET" -eq 1 ]; then
 			PG_MODE="external"
 			PG_MODE_SET=1
-			info "PostgreSQL connection options given — selecting --postgres external."
+			info "PostgreSQL connection options given; selecting --postgres external."
 		elif [ "$PG_PORT_SET" -eq 1 ]; then
 			warn "--pg-port alone does not select an existing instance: pass --pg-host as well. The embedded database is used, and the port is ignored."
 		fi
@@ -705,7 +703,7 @@ apply_pairings() {
 		   [ "$OBJ_ACCESS_KEY_SET" -eq 1 ] || [ "$OBJ_SECRET_KEY_SET" -eq 1 ]; then
 			STORE_BACKEND="obj"
 			STORE_BACKEND_SET=1
-			info "Object store options given — selecting --store-backend obj."
+			info "Object store options given; selecting --store-backend obj."
 		fi
 	elif [ "$STORE_BACKEND" = "fs" ]; then
 		if [ "$OBJ_ENDPOINT_SET" -eq 1 ] || [ "$OBJ_ACCESS_KEY_SET" -eq 1 ] ||
@@ -720,7 +718,7 @@ apply_pairings() {
 		if [ "$DOMAIN_SET" -eq 1 ] || [ "$TLS_CERT_SET" -eq 1 ] || [ "$TLS_KEY_SET" -eq 1 ]; then
 			ENABLE_TLS=1
 			ENABLE_TLS_SET=1
-			info "TLS options given — enabling TLS."
+			info "TLS options given; enabling TLS."
 		fi
 	elif [ "$ENABLE_TLS" -eq 0 ]; then
 		if [ "$DOMAIN_SET" -eq 1 ] || [ "$TLS_CERT_SET" -eq 1 ] || [ "$TLS_KEY_SET" -eq 1 ]; then
@@ -1287,7 +1285,7 @@ print_summary() {
 confirm_summary() {
 	if ! ask_yn "Proceed with installation using these settings?" "y"; then
 		echo
-		info "Installation cancelled — nothing was changed."
+		info "Installation cancelled; nothing was changed."
 		exit 0
 	fi
 	echo
@@ -1307,7 +1305,7 @@ check_domain_dns() {
 	fi
 
 	if [ -z "$resolved" ]; then
-		warn "could not resolve '$DOMAIN' — clients will not reach Mosaico by that name until DNS is configured."
+		warn "could not resolve '$DOMAIN': clients will not reach Mosaico by that name until DNS is configured."
 		return 0
 	fi
 
@@ -1642,7 +1640,7 @@ PG_DB=$PG_DB"
 	fi
 
 	( umask 022 && cat > "$DATA_DIR/install.conf" <<-EOF
-	# Generated by mosaico-installer (macOS) v$SCRIPT_VERSION — do not edit by hand.
+	# Generated by mosaico-installer (macOS) v$SCRIPT_VERSION. Do not edit by hand.
 	PLATFORM=macos
 	MOSAICO_VERSION=$MOSAICO_VERSION
 	MOSAICOD_PORT=$MOSAICOD_PORT
@@ -1861,8 +1859,8 @@ run_mosaicod() {
 
 	is_dry_run || sleep 3
 
-	# `podman run -d` reports success for a container that then exits immediately —
-	# a bad connection string, an unreadable certificate — so the state is checked
+	# `podman run -d` reports success for a container that then exits immediately
+	# (a bad connection string, an unreadable certificate), so the state is checked
 	# explicitly and the logs printed.
 	if ! is_dry_run && ! podman_c ps --filter "name=^${MOSAICOD_CONTAINER}$" --format '{{.Names}}' 2>/dev/null | grep -q "^${MOSAICOD_CONTAINER}$"; then
 		echo
@@ -1875,8 +1873,8 @@ run_mosaicod() {
 }
 
 # The cleanup routine is a separate process from 0.6 on. Same image, environment
-# file and store — it deletes frames from the store and reads the database to know
-# which ones — with no published port and no certificate.
+# file and store (it deletes frames from the store and reads the database to know
+# which ones), with no published port and no certificate.
 run_cleanup() {
 	[ "$CLEANUP" -eq 1 ] || return 0
 
@@ -1959,7 +1957,7 @@ create_master_api_key() {
 
 # Makes `mosaicod ...` behave like a native binary: it forwards into the container
 # and re-injects the environment file, so the CLI sees the daemon's configuration.
-# It needs no privileges, and it only works while the daemon is up — `podman exec`
+# It needs no privileges, and it only works while the daemon is up: `podman exec`
 # needs a running container.
 install_cli_wrapper() {
 	_wrapper="$BIN_DIR/$CLI_WRAPPER_NAME"
@@ -1975,7 +1973,7 @@ install_cli_wrapper() {
 	# wrapper's own variables are escaped to survive until then.
 	cat > "$_wrapper" <<-EOF
 	#!/bin/sh
-	# Generated by mosaico-installer (macOS) v$SCRIPT_VERSION — do not edit by hand.
+	# Generated by mosaico-installer (macOS) v$SCRIPT_VERSION. Do not edit by hand.
 	set -e
 
 	PODMAN="$PODMAN_BIN"
@@ -2028,7 +2026,7 @@ install_installer() {
 
 # Brings Mosaico back after a reboot: a starter script, and a LaunchAgent that runs
 # it at login. An agent and not a daemon, because a podman machine belongs to a
-# user and root would not find it — so Mosaico comes up at login, not at boot.
+# user and root would not find it: Mosaico therefore comes up at login, not at boot.
 install_launch_agent() {
 	step_line "Installing the login starter in $STARTER"
 
@@ -2052,7 +2050,7 @@ install_launch_agent() {
 	# /opt/homebrew/bin nor /usr/local/bin in it.
 	cat > "$STARTER" <<-EOF
 	#!/bin/sh
-	# Generated by mosaico-installer (macOS) v$SCRIPT_VERSION — do not edit by hand.
+	# Generated by mosaico-installer (macOS) v$SCRIPT_VERSION. Do not edit by hand.
 	#
 	# Started by launchd at login through $LAUNCH_AGENT.
 	# Errors are not fatal: a machine already running, or containers already up,
@@ -2274,7 +2272,7 @@ do_uninstall() {
 	# Not removed here: the machine may hold containers this installer knows nothing
 	# about, and removing it would take them too.
 	echo "  The podman machine '$MACHINE' was left in place, since it may hold other"
-	echo "  containers. Remove it — and with it the volume above — with:"
+	echo "  containers. Remove it (and with it the volume above) with:"
 	echo
 	echo "${BOLD}    podman machine rm $MACHINE${RESET}"
 	if [ "$PG_MODE" != "embedded" ]; then
@@ -2316,7 +2314,7 @@ print_success() {
 	if [ "$PG_MODE" = "external" ]; then
 		echo
 		echo "  Database: PostgreSQL at $PG_HOST:$PG_PORT/$PG_DB as $PG_USER"
-		echo "  ${DIM}Not managed by this installer — backups and upgrades are yours.${RESET}"
+		echo "  ${DIM}Not managed by this installer: backups and upgrades are yours.${RESET}"
 	fi
 
 	echo
@@ -2326,7 +2324,7 @@ print_success() {
 		echo "     ${DIM}Full key: $SECRETS_DIR/master_api_key${RESET}"
 	elif [ "$API_KEY" -eq 0 ]; then
 		echo
-		echo "  ${YELLOW}Note:${RESET} API keys are not required — anyone who can reach port"
+		echo "  ${YELLOW}Note:${RESET} API keys are not required: anyone who can reach port"
 		echo "        $MOSAICOD_PORT can read and write data. Re-run the installer with"
 		echo "        --api-key to require them."
 	fi
@@ -2342,7 +2340,7 @@ print_success() {
 
 	if [ "$CLEANUP" -eq 1 ]; then
 		echo
-		echo "  Cleanup routine enabled — $(cleanup_summary)."
+		echo "  Cleanup routine enabled: $(cleanup_summary)."
 		echo "  ${DIM}It runs in its own container, $CLEANUP_CONTAINER.${RESET}"
 		echo "  ${DIM}$CLEANUP_DOCS_URL${RESET}"
 	fi
@@ -2435,7 +2433,7 @@ do_install() {
 
 	echo
 	if is_dry_run; then
-		echo "${YELLOW}Dry run complete — nothing was installed or changed.${RESET}"
+		echo "${YELLOW}Dry run complete: nothing was installed or changed.${RESET}"
 	else
 		print_success
 	fi
