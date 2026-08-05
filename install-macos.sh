@@ -319,8 +319,6 @@ SDK_VENV="$DATA_DIR/sdk"
 SDK_PACKAGE="mosaicolabs"
 DOCS_URL="https://docs.mosaico.dev"
 CLEANUP_DOCS_URL="https://docs.mosaico.dev/config/cleanup"
-# Shown to the user only. Mirrors the defaults of the `cleanup` subcommand.
-CLEANUP_DEFAULT_HINT="frames kept 1d, cleanup every 1d"
 # The subcommand defaults --time-interval to 0, which means "clean once and exit".
 # A container created with --restart=always would then be restarted forever, so an
 # interval has to be supplied.
@@ -1168,7 +1166,7 @@ configure_interactive() {
 	section "[5/6] Data Retention & Cleanup"
 	if [ "$CLEANUP_SET" -eq 0 ]; then
 		echo "  The cleanup routine prunes obsolete dataset frames and runs by default,"
-		echo "  with mosaicod's own settings: ${BOLD}$CLEANUP_DEFAULT_HINT${RESET}."
+		echo "  with mosaicod's own settings, documented at:"
 		echo "  ${BRAND}$CLEANUP_DOCS_URL${RESET}"
 		if ask_yn "Disable the automated cleanup routine?" "n"; then
 			CLEANUP=0
@@ -1446,6 +1444,57 @@ check_podman_version() {
 	minor="$(echo "$version" | cut -d. -f2)"
 	if [ "$major" -lt 4 ] 2>/dev/null || { [ "$major" -eq 4 ] 2>/dev/null && [ "$minor" -lt 4 ] 2>/dev/null; }; then
 		fatal "podman $version is too old (needs >= 4.4). Upgrade it with 'brew upgrade podman'."
+	fi
+}
+
+# GHCR serves manifests through the standard OCI Distribution API, which requires
+# a short-lived bearer token before it can be read, even for a public image.
+fetch_ghcr_token() {
+	_repo_path="${MOSAICOD_IMAGE_REPO#ghcr.io/}"
+	_url="https://ghcr.io/token?scope=repository:$_repo_path:pull&service=ghcr.io"
+	if command_exists curl; then
+		curl -fsSL "$_url" 2>> "$LOG_FILE"
+	elif command_exists wget; then
+		wget -qO- "$_url" 2>> "$LOG_FILE"
+	fi
+}
+
+# The default tag ships together with this script, so only a --version pointed
+# elsewhere is worth a round-trip to the registry, and only curl can tell a
+# missing tag (404) apart from a network hiccup, so wget can only confirm the
+# tag exists, never that it is missing.
+check_mosaico_version() {
+	[ "$MOSAICO_VERSION" = "$DEFAULT_MOSAICO_VERSION" ] && return 0
+	{ command_exists curl || command_exists wget; } || return 0
+
+	step "Checking that $MOSAICOD_IMAGE_REPO:$MOSAICO_VERSION exists..."
+
+	_token="$(fetch_ghcr_token | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+	if [ -z "$_token" ]; then
+		step_ok "skipped (could not reach ghcr.io)"
+		return 0
+	fi
+
+	_repo_path="${MOSAICOD_IMAGE_REPO#ghcr.io/}"
+	_manifest_url="https://ghcr.io/v2/$_repo_path/manifests/$MOSAICO_VERSION"
+	_accept="application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json"
+
+	if command_exists curl; then
+		_http_code="$(curl -s -o /dev/null -w '%{http_code}' -L \
+			-H "Authorization: Bearer $_token" -H "Accept: $_accept" \
+			"$_manifest_url")"
+		case "$_http_code" in
+			200) step_ok ;;
+			404)
+				echo
+				fatal "image $MOSAICOD_IMAGE_REPO:$MOSAICO_VERSION was not found. Check that the tag is correct, or drop --version to use the default ($DEFAULT_MOSAICO_VERSION)."
+				;;
+			*) step_ok "skipped (registry returned HTTP $_http_code)" ;;
+		esac
+	elif wget -q --spider --header="Authorization: Bearer $_token" --header="Accept: $_accept" "$_manifest_url" 2>> "$LOG_FILE"; then
+		step_ok
+	else
+		step_ok "skipped (could not verify with wget)"
 	fi
 }
 
@@ -2384,12 +2433,14 @@ print_success() {
 do_install() {
 	if [ "$NON_INTERACTIVE" -eq 1 ]; then
 		print_logo
+		check_mosaico_version
 		validate_non_interactive
 	else
 		if ! has_tty; then
 			fatal "no terminal available for interactive setup. Re-run with -y and the required flags (see --help)."
 		fi
 		print_logo
+		check_mosaico_version
 		echo
 		configure_interactive
 	fi
