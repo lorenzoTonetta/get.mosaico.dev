@@ -1169,7 +1169,7 @@ configure_interactive() {
 	if [ "$CLEANUP_SET" -eq 0 ]; then
 		echo "  The cleanup routine prunes obsolete dataset frames and runs by default,"
 		echo "  with mosaicod's own settings: ${BOLD}$CLEANUP_DEFAULT_HINT${RESET}."
-		echo "  ${DIM}$CLEANUP_DOCS_URL${RESET}"
+		echo "  ${BRAND}$CLEANUP_DOCS_URL${RESET}"
 		if ask_yn "Disable the automated cleanup routine?" "n"; then
 			CLEANUP=0
 		else
@@ -2337,7 +2337,7 @@ print_success() {
 		echo
 		echo "  Cleanup routine enabled: $(cleanup_summary)."
 		echo "  ${DIM}It runs in its own container, $CLEANUP_CONTAINER.${RESET}"
-		echo "  ${DIM}$CLEANUP_DOCS_URL${RESET}"
+		echo "  ${BRAND}$CLEANUP_DOCS_URL${RESET}"
 	fi
 
 	if [ "$SDK" -eq 1 ]; then
@@ -2375,7 +2375,7 @@ print_success() {
 		echo "    $FS_DIR  ${DIM}dataset frames${RESET}"
 	fi
 	echo
-	echo "  Documentation: ${DIM}$DOCS_URL${RESET}"
+	echo "  Documentation: ${BRAND}$DOCS_URL${RESET}"
 	echo
 }
 

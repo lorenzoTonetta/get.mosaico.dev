@@ -1223,7 +1223,7 @@ configure_interactive() {
 	if [ "$CLEANUP_SET" -eq 0 ]; then
 		echo "  The cleanup routine prunes obsolete dataset frames and runs by default,"
 		echo "  with mosaicod's own settings: ${BOLD}$CLEANUP_DEFAULT_HINT${RESET}."
-		echo "  ${DIM}$CLEANUP_DOCS_URL${RESET}"
+		echo "  ${BRAND}$CLEANUP_DOCS_URL${RESET}"
 		if ask_yn "Disable the automated cleanup routine?" "n"; then
 			CLEANUP=0
 		else
@@ -2110,7 +2110,7 @@ install_man_page() {
 	# The only step allowed to fail without failing the installation: what the page
 	# describes is already installed, and the same text is online.
 	if ! _man_file="$(fetch_man_page)"; then
-		warn "could not obtain $MAN_PAGE_NAME from $MAN_PAGE_URL: 'man mosaico' will not be available. Everything else is installed; see $DOCS_URL."
+		warn "could not obtain $MAN_PAGE_NAME from ${BRAND}$MAN_PAGE_URL${RESET}: 'man mosaico' will not be available. Everything else is installed; see ${BRAND}$DOCS_URL${RESET}."
 		return 0
 	fi
 
@@ -2493,7 +2493,7 @@ print_success() {
 		echo
 		echo "  Cleanup routine enabled: $(cleanup_summary)."
 		echo "  ${DIM}It runs in its own container, supervised as mosaico-cleanup.service.${RESET}"
-		echo "  ${DIM}$CLEANUP_DOCS_URL${RESET}"
+		echo "  ${BRAND}$CLEANUP_DOCS_URL${RESET}"
 	fi
 
 	if [ "$SDK" -eq 1 ]; then
@@ -2509,10 +2509,10 @@ print_success() {
 	else
 		# The page could not be fetched, so `man mosaico` would find nothing.
 		echo "  Installed commands, file locations and how to uninstall:"
-		echo "    ${BOLD}$MAN_PAGE_URL${RESET}"
+		echo "    ${BRAND}$MAN_PAGE_URL${RESET}"
 	fi
 	echo
-	echo "  Documentation: ${DIM}$DOCS_URL${RESET}"
+	echo "  Documentation: ${BRAND}$DOCS_URL${RESET}"
 	echo
 }
 
