@@ -320,13 +320,55 @@ command_exists() {
 	command -v "$@" > /dev/null 2>&1
 }
 
+# The Linux virtual console (TERM=linux: logged in at the physical console or
+# over serial, with no terminal emulator in between) has neither truecolor nor a
+# console font that covers the block-drawing glyphs used below, and $TERM is one
+# of the few things SSH does forward, unlike $LANG or $COLORTERM, which reflect
+# the remote shell's locale and env rather than what the display can render.
+is_limited_console() {
+	case "${TERM:-}" in
+		linux | dumb | "") return 0 ;;
+	esac
+	return 1
+}
+
+# SSH does not forward COLORTERM by default, so its absence proves nothing; only
+# trust the terminals and multiplexers known to set it, or to announce truecolor
+# in $TERM itself, and fall back to a safer color elsewhere.
+supports_truecolor() {
+	is_limited_console && return 1
+	case "${COLORTERM:-}" in
+		truecolor | 24bit) return 0 ;;
+	esac
+	case "${TERM:-}" in
+		*-truecolor | *-direct | xterm-kitty | alacritty) return 0 ;;
+	esac
+	return 1
+}
+
 setup_colors() {
+	# Independent of tty-ness: a limited console mangles the glyph whether the
+	# output is a terminal or piped into a log.
+	if supports_utf8; then
+		ARROW="➜"
+	else
+		ARROW="->"
+	fi
+
 	# Enable colors only when the output is a real terminal.
 	if [ -t 1 ]; then
 		RESET=$(printf '\033[0m')
 		BOLD=$(printf '\033[1m')
 		DIM=$(printf '\033[2m')
-		BRAND=$(printf '\033[38;2;5;163;198m')
+		if supports_truecolor; then
+			BRAND=$(printf '\033[38;2;5;163;198m')
+		elif command_exists tput && [ "$(tput colors 2>/dev/null || echo 0)" -ge 256 ] 2>/dev/null; then
+			# Nearest xterm 256-color match for #05A3C6.
+			BRAND=$(printf '\033[38;5;38m')
+		else
+			# Plain ANSI has no matching hue; bright cyan is the closest safe bet.
+			BRAND=$(printf '\033[96m')
+		fi
 		GREEN=$(printf '\033[32m')
 		YELLOW=$(printf '\033[33m')
 		RED=$(printf '\033[31m')
@@ -339,6 +381,14 @@ setup_colors() {
 		YELLOW=""
 		RED=""
 	fi
+}
+
+# The block-drawing glyphs in print_logo render correctly on every terminal
+# emulator, but not on the limited console above: what the remote shell's own
+# locale is does not matter, since it has no bearing on how the display renders
+# the bytes this script sends it.
+supports_utf8() {
+	! is_limited_console
 }
 
 info()  { printf "${BRAND}Info:${RESET} %s\n" "$*"; }
@@ -2371,12 +2421,16 @@ install_installer() {
 
 print_logo() {
 	echo
-	echo "${BOLD}                           ▀▀${RESET}"
-	echo "${BOLD}███▄███▄ ▄███▄ ▄█▀▀▀  ▀▀█▄ ██  ▄████ ▄███▄${RESET}"
-	echo "${BOLD}██ ██ ██ ██ ██ ▀███▄ ▄█▀██ ██  ██    ██ ██${RESET}"
-	echo "${BOLD}██ ██ ██ ▀███▀ ▄▄▄█▀ ▀█▄██ ██▄ ▀████ ▀███▀${RESET}"
+	if supports_utf8; then
+		echo "${BOLD}                           ▀▀${RESET}"
+		echo "${BOLD}███▄███▄ ▄███▄ ▄█▀▀▀  ▀▀█▄ ██  ▄████ ▄███▄${RESET}"
+		echo "${BOLD}██ ██ ██ ██ ██ ▀███▄ ▄█▀██ ██  ██    ██ ██${RESET}"
+		echo "${BOLD}██ ██ ██ ▀███▀ ▄▄▄█▀ ▀█▄██ ██▄ ▀████ ▀███▀${RESET}"
+	else
+		echo "${BOLD}mosaico${RESET}"
+	fi
 	echo
-	echo "  ${BRAND}➜${RESET}  System detected: ${BRAND}${BOLD}Linux${RESET}"
+	echo "  ${BRAND}${ARROW}${RESET}  System detected: ${BRAND}${BOLD}Linux${RESET}"
 }
 
 # --- Uninstall ---
@@ -2481,22 +2535,22 @@ print_success() {
 	echo
 	echo "${GREEN}${BOLD}  Mosaico is up and running!${RESET}"
 	echo
-	echo "  ${BRAND}➜${RESET}  Local:    $scheme://127.0.0.1:$MOSAICOD_PORT"
+	echo "  ${BRAND}${ARROW}${RESET}  Local:    $scheme://127.0.0.1:$MOSAICOD_PORT"
 
 	# With TLS only the certified name is advertised: the daemon does answer on every
 	# address, but a client connecting to a bare IP would fail certificate validation.
 	if [ "$ENABLE_TLS" -eq 1 ]; then
-		echo "  ${BRAND}➜${RESET}  Domain:   $scheme://$DOMAIN:$MOSAICOD_PORT"
+		echo "  ${BRAND}${ARROW}${RESET}  Domain:   $scheme://$DOMAIN:$MOSAICOD_PORT"
 	else
 		if command_exists hostname; then
 			for ip in $(hostname -I 2>/dev/null); do
-				echo "  ${BRAND}➜${RESET}  Network:  $scheme://$ip:$MOSAICOD_PORT"
+				echo "  ${BRAND}${ARROW}${RESET}  Network:  $scheme://$ip:$MOSAICOD_PORT"
 			done
 		fi
 		if command_exists curl; then
 			public_ip=$(curl -s --max-time 2 ifconfig.me 2>/dev/null || true)
 			if [ -n "$public_ip" ]; then
-				echo "  ${BRAND}➜${RESET}  Public:   $scheme://$public_ip:$MOSAICOD_PORT"
+				echo "  ${BRAND}${ARROW}${RESET}  Public:   $scheme://$public_ip:$MOSAICOD_PORT"
 			fi
 		fi
 	fi
@@ -2510,7 +2564,7 @@ print_success() {
 	echo
 	echo "  Security credentials saved to $SECRETS_DIR/"
 	if [ -n "$MASTER_API_KEY" ]; then
-		echo "  ${BRAND}➜${RESET}  Master API Key:  $(printf '%s' "$MASTER_API_KEY" | cut -c1-29)..."
+		echo "  ${BRAND}${ARROW}${RESET}  Master API Key:  $(printf '%s' "$MASTER_API_KEY" | cut -c1-29)..."
 		echo "     ${DIM}Full key: $SECRETS_DIR/master_api_key${RESET}"
 	elif [ "$API_KEY" -eq 0 ]; then
 		# The daemon answers on every address of the host, so "no API key" means a
