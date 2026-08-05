@@ -4,8 +4,9 @@ set -e
 #
 # This script is intended as a convenient way to get Mosaico running on a
 # single machine for evaluation or development. It installs mosaicod (the
-# Mosaico daemon) and an embedded PostgreSQL instance using system-level
-# Podman containers supervised by systemd (via Quadlet).
+# Mosaico daemon) using a system-level Podman container supervised by systemd
+# (via Quadlet), together with an embedded PostgreSQL instance in a second
+# container — or, if you already run PostgreSQL, pointed at that instead.
 #
 # This script is not recommended for production environments. Before running
 # this script, make yourself familiar with potential risks and limitations,
@@ -20,12 +21,17 @@ set -e
 #   unattended when `-y` / `--yes` is given.
 # - Sets up systemd Quadlet configurations in /etc/containers/systemd/.
 # - Generates a random PostgreSQL password on first run and reuses it on
-#   subsequent runs, it is never printed to the terminal or the log.
+#   subsequent runs, it is never printed to the terminal or the log. Only for the
+#   embedded database: the credentials of an existing instance are asked for.
 # - Installs a host CLI wrapper at /usr/local/bin/mosaicod that forwards
 #   commands into the container.
 # - Copies itself to /usr/local/bin/mosaico-installer for future management.
 # - Installs a man page describing the installed commands, the file layout and
-#   the uninstall procedure — see `man mosaico`.
+#   the uninstall procedure — see `man mosaico`. The page is a file of its own,
+#   mosaico.7, taken from the installer's own directory when the script was run
+#   from a checkout and downloaded from the repository otherwise. It is the only
+#   step that needs the network beyond the container images, and the only one
+#   that is skipped with a warning rather than failing the installation.
 #
 # Source code is available at https://github.com/mosaico-labs/mosaico
 #
@@ -56,6 +62,7 @@ set -e
 # Several options only make sense together. Each feature toggle has a set of
 # dependent options:
 #
+#   --postgres external  requires  --pg-host, --pg-password
 #   --store-backend obj  requires  --obj-endpoint, --obj-bucket,
 #                                  --obj-access-key, --obj-secret-key
 #   --store-backend fs   requires  --fs-dir
@@ -76,6 +83,41 @@ set -e
 # passed explicitly, and fail fast if a mandatory option is missing.
 #
 #   $ sudo sh install-mosaico.sh -y --api-key
+#
+# --postgres <embedded|external>
+# Where mosaicod keeps its metadata. `embedded` runs PostgreSQL in a container of
+# its own, supervised by systemd, with a password this script generates: nothing
+# has to exist beforehand. `external` uses a PostgreSQL instance you already run
+# — on this host, on another machine or hosted — and creates no database
+# container at all. Default: embedded.
+#
+# `external` is not a migration: it points a fresh installation at an empty
+# database. Switching an existing installation over stops and removes the
+# embedded container and leaves its volume untouched, it does not move any data.
+#
+# --pg-host <HOST>
+# Host name or address of the existing PostgreSQL instance. Required when
+# --postgres is `external`. An IPv6 literal has to be given in brackets, as in
+# [2001:db8::1].
+#
+# A loopback address is rewritten to `host.containers.internal`, because
+# 127.0.0.1 inside the container is the container itself. PostgreSQL then has to
+# listen on something other than the host loopback and accept the container
+# network in pg_hba.conf — passing the host's LAN address avoids the indirection.
+#
+# --pg-port <PORT>
+# Port of the existing instance. Default: 5432.
+#
+# --pg-db <NAME>
+# --pg-user <NAME>
+# Database and role mosaicod connects as. Both have to exist already, and the
+# role needs enough privilege to create mosaicod's schema on first start.
+# Default: mosaico for both.
+#
+# --pg-password <PASSWORD>
+# Password of that role. Required when --postgres is `external`; asked for
+# without echo in an interactive session, so that it stays out of the shell
+# history. It is written only to the root-only environment file.
 #
 # --store-backend <fs|obj>
 # Selects where dataset frames are stored. `fs` keeps them on a local
@@ -196,7 +238,7 @@ set -e
 #
 # ==============================================================================
 
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="1.1.0"
 
 # --- Configuration ---
 
@@ -236,6 +278,15 @@ MAN_DIR="/usr/local/share/man"
 MAN_PAGE="$MAN_DIR/man7/mosaico.7"
 MAN_LINK_CLI="$MAN_DIR/man1/mosaicod.1"
 MAN_LINK_INSTALLER="$MAN_DIR/man8/mosaico-installer.8"
+# The page lives next to this script in the repository rather than in a heredoc
+# here: it is roff, it is long, and keeping it out of the installer means it can
+# be read, diffed and rendered on its own. Run from a checkout the local copy is
+# used; otherwise it is downloaded from the raw URL below.
+MAN_PAGE_NAME="mosaico.7"
+MAN_PAGE_URL="https://raw.githubusercontent.com/mosaico-labs/get.mosaico.dev/main/$MAN_PAGE_NAME"
+# Set by install_man_page: print_success only points at `man mosaico` when the
+# page actually made it onto the host.
+MAN_PAGE_INSTALLED=0
 DOCS_URL="https://docs.mosaico.dev"
 CLEANUP_DOCS_URL="https://docs.mosaico.dev/config/cleanup"
 # Shown to the user, never applied: the values themselves stay in mosaicod, and
@@ -303,6 +354,26 @@ bool_str() {
 	[ "$1" -eq 1 ] && echo true || echo false
 }
 
+# Percent-encodes everything outside the unreserved set of RFC 3986. The database
+# credentials end up inside a URL, where a password containing @ : / ? # would
+# otherwise be parsed as part of the syntax — and those are exactly the
+# characters a password generator likes. Only ASCII is handled: a byte outside it
+# is encoded as whatever the shell reports for it, which is enough for the
+# credentials this is used on.
+urlencode() {
+	_ue_rest="$1"
+	_ue_out=""
+	while [ -n "$_ue_rest" ]; do
+		_ue_char="${_ue_rest%"${_ue_rest#?}"}"
+		_ue_rest="${_ue_rest#?}"
+		case "$_ue_char" in
+			[A-Za-z0-9.~_-]) _ue_out="$_ue_out$_ue_char" ;;
+			*) _ue_out="$_ue_out$(printf '%%%02X' "'$_ue_char")" ;;
+		esac
+	done
+	printf '%s' "$_ue_out"
+}
+
 setup_colors
 
 # --- Configuration state ---
@@ -314,6 +385,20 @@ setup_colors
 # Read from the environment rather than reset, so that NON_INTERACTIVE=1 in the
 # environment is honoured even though --yes may also set it later.
 NON_INTERACTIVE="$(to_bool "${NON_INTERACTIVE:-0}")"
+
+# Where the metadata database lives. "embedded" is the default because it needs
+# nothing from the operator: the container, the role and the password are all
+# created here. "external" only records a connection string.
+PG_MODE="embedded";           PG_MODE_SET=0
+PG_HOST="";                   PG_HOST_SET=0
+PG_PORT="5432";               PG_PORT_SET=0
+PG_USER="mosaico";            PG_USER_SET=0
+PG_PASSWORD="";               PG_PASSWORD_SET=0
+PG_DB="mosaico";              PG_DB_SET=0
+# Derived in derive_pg_container_host, not passed by the user: the host as the
+# container has to spell it, which differs from PG_HOST for a local instance.
+PG_HOST_IN_CONTAINER=""
+PG_HOST_IS_LOCAL=0
 
 STORE_BACKEND="fs";           STORE_BACKEND_SET=0
 FS_DIR="$DATA_DIR/storage";   FS_DIR_SET=0
@@ -348,8 +433,9 @@ usage() {
 	cat <<-EOF
 	Mosaico Installer (v$SCRIPT_VERSION)
 
-	This script installs Mosaico (mosaicod + embedded PostgreSQL) using
-	system-level Podman containers supervised by systemd (via Quadlet).
+	This script installs Mosaico (mosaicod, plus an embedded PostgreSQL unless
+	you already run one) using system-level Podman containers supervised by
+	systemd (via Quadlet).
 
 	Usage:
 	  \$ curl -fsSL https://get.mosaico.dev | sh
@@ -362,6 +448,18 @@ usage() {
 	      --dry-run                   Print commands without running them
 	      --version <tag>             Install a specific image tag
 	                                  (default: $DEFAULT_MOSAICO_VERSION)
+
+	Database options:
+	      --postgres <embedded|external>
+	                                  Run PostgreSQL in a container of its own
+	                                  (default: embedded), or use an instance you
+	                                  already have
+	      --pg-host <host>            Host or address of the existing instance
+	                                  (IPv6 in brackets)
+	      --pg-port <port>            Port of the existing instance (default: 5432)
+	      --pg-db <name>              Database name (default: mosaico)
+	      --pg-user <name>            Role to connect as (default: mosaico)
+	      --pg-password <password>    Password of that role
 
 	Storage options:
 	      --store-backend <fs|obj>    Local filesystem or object store (default: fs)
@@ -405,6 +503,7 @@ usage() {
 
 	Paired options — with -y all of a group must be given, interactively the
 	missing ones are asked for:
+	      --postgres external  ->  --pg-host, --pg-password
 	      --store-backend obj  ->  --obj-endpoint, --obj-bucket,
 	                               --obj-access-key, --obj-secret-key
 	      --enable-tls         ->  --domain
@@ -424,6 +523,17 @@ require_value() {
 	if [ $# -lt 2 ] || [ -z "$2" ]; then
 		fatal "option $1 requires a value."
 	fi
+}
+
+# Normalizes the database mode. The synonyms are the words users reach for when
+# describing the two cases: a database this installer creates, or one that is
+# already running somewhere.
+normalize_pg_mode() {
+	case "$(lower "$1")" in
+		embedded|internal|container|local|managed) echo embedded ;;
+		external|existing|remote)                 echo external ;;
+		*)                                        echo "$1" ;;
+	esac
 }
 
 # Normalizes the backend spelling. `object` is accepted as a synonym of `obj`
@@ -446,6 +556,39 @@ parse_args() {
 
 			--version) require_value "$@"; MOSAICO_VERSION="${2#v}"; shift ;;
 			--version=*) MOSAICO_VERSION="${1#*=}"; MOSAICO_VERSION="${MOSAICO_VERSION#v}" ;;
+
+			# --postgres selects between the two arrangements; the two spelled-out
+			# forms exist because they read better in a command line than
+			# `--postgres external` does.
+			--postgres|--postgres-mode|--db)
+				require_value "$@"
+				PG_MODE="$(normalize_pg_mode "$2")"; PG_MODE_SET=1; shift ;;
+			--postgres=*|--postgres-mode=*|--db=*)
+				PG_MODE="$(normalize_pg_mode "${1#*=}")"; PG_MODE_SET=1 ;;
+			--external-postgres|--existing-postgres) PG_MODE="external"; PG_MODE_SET=1 ;;
+			--embedded-postgres) PG_MODE="embedded"; PG_MODE_SET=1 ;;
+
+			--pg-host|--postgres-host|--db-host)
+				require_value "$@"; PG_HOST="$2"; PG_HOST_SET=1; shift ;;
+			--pg-host=*|--postgres-host=*|--db-host=*) PG_HOST="${1#*=}"; PG_HOST_SET=1 ;;
+
+			--pg-port|--postgres-port|--db-port)
+				require_value "$@"; PG_PORT="$2"; PG_PORT_SET=1; shift ;;
+			--pg-port=*|--postgres-port=*|--db-port=*) PG_PORT="${1#*=}"; PG_PORT_SET=1 ;;
+
+			--pg-user|--postgres-user|--db-user)
+				require_value "$@"; PG_USER="$2"; PG_USER_SET=1; shift ;;
+			--pg-user=*|--postgres-user=*|--db-user=*) PG_USER="${1#*=}"; PG_USER_SET=1 ;;
+
+			--pg-password|--postgres-password|--db-password)
+				require_value "$@"; PG_PASSWORD="$2"; PG_PASSWORD_SET=1; shift ;;
+			--pg-password=*|--postgres-password=*|--db-password=*)
+				PG_PASSWORD="${1#*=}"; PG_PASSWORD_SET=1 ;;
+
+			--pg-db|--pg-database|--postgres-db|--db-name)
+				require_value "$@"; PG_DB="$2"; PG_DB_SET=1; shift ;;
+			--pg-db=*|--pg-database=*|--postgres-db=*|--db-name=*)
+				PG_DB="${1#*=}"; PG_DB_SET=1 ;;
 
 			# --storage-backend is an accepted alias for --store-backend.
 			--store-backend|--storage-backend)
@@ -526,6 +669,28 @@ parse_args() {
 # given explicitly it always wins, and the ignored options are reported.
 
 apply_pairings() {
+	# Connection details are only meaningful for an instance this installer does
+	# not create, so giving any of them selects `external`. --pg-port alone is not
+	# taken as that signal: it has a default, and 5432 on its own says nothing
+	# about which of the two arrangements was meant.
+	if [ "$PG_MODE_SET" -eq 0 ]; then
+		if [ "$PG_HOST_SET" -eq 1 ] || [ "$PG_USER_SET" -eq 1 ] ||
+		   [ "$PG_PASSWORD_SET" -eq 1 ] || [ "$PG_DB_SET" -eq 1 ]; then
+			PG_MODE="external"
+			PG_MODE_SET=1
+			info "PostgreSQL connection options given — selecting --postgres external."
+		elif [ "$PG_PORT_SET" -eq 1 ]; then
+			# The one --pg-* option that cannot stand alone, since the embedded
+			# database is not published to the host and so has no port to move.
+			warn "--pg-port alone does not select an existing instance: pass --pg-host as well. The embedded database is used, and the port is ignored."
+		fi
+	elif [ "$PG_MODE" = "embedded" ]; then
+		if [ "$PG_HOST_SET" -eq 1 ] || [ "$PG_USER_SET" -eq 1 ] ||
+		   [ "$PG_PASSWORD_SET" -eq 1 ] || [ "$PG_DB_SET" -eq 1 ] || [ "$PG_PORT_SET" -eq 1 ]; then
+			warn "--postgres embedded was requested; the --pg-* options are ignored."
+		fi
+	fi
+
 	if [ "$STORE_BACKEND_SET" -eq 0 ]; then
 		if [ "$OBJ_ENDPOINT_SET" -eq 1 ] || [ "$OBJ_BUCKET_SET" -eq 1 ] ||
 		   [ "$OBJ_ACCESS_KEY_SET" -eq 1 ] || [ "$OBJ_SECRET_KEY_SET" -eq 1 ]; then
@@ -582,6 +747,30 @@ is_valid_backend() {
 	esac
 }
 
+is_valid_pg_mode() {
+	case "$1" in
+		embedded|external) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+# Looser than is_valid_domain, which insists on a dot: a database may well be
+# reachable as `localhost`, as a bare short name or as an address. IPv6 literals
+# are accepted only in brackets, which is also how they have to appear in the
+# connection URL.
+is_valid_host() {
+	case "$1" in
+		\[*\]) echo "$1" | grep -Eq '^\[[0-9A-Fa-f:]+\]$' && return 0
+		       return 1 ;;
+		*:*)   return 1 ;;
+	esac
+	echo "$1" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$'
+}
+
+is_valid_port() {
+	echo "$1" | grep -Eq '^[1-9][0-9]{0,4}$' && [ "$1" -le 65535 ]
+}
+
 is_valid_endpoint() {
 	case "$1" in
 		http://?*|https://?*) return 0 ;;
@@ -636,8 +825,18 @@ duration_to_seconds() {
 # Rejects a malformed value as soon as it is seen, so the user is not walked
 # through a whole questionnaire before learning that a flag was wrong.
 validate_flags() {
+	is_valid_pg_mode "$PG_MODE" || \
+		fatal "invalid --postgres '$PG_MODE' (expected 'embedded' or 'external')."
+
 	is_valid_backend "$STORE_BACKEND" || \
 		fatal "invalid --store-backend '$STORE_BACKEND' (expected 'fs' or 'obj')."
+
+	if [ "$PG_HOST_SET" -eq 1 ] && ! is_valid_host "$PG_HOST"; then
+		fatal "--pg-host '$PG_HOST' is not a valid host name or address (an IPv6 literal needs brackets, as in [2001:db8::1])."
+	fi
+	if [ "$PG_PORT_SET" -eq 1 ] && ! is_valid_port "$PG_PORT"; then
+		fatal "--pg-port '$PG_PORT' is not a valid port number."
+	fi
 
 	if [ "$FS_DIR_SET" -eq 1 ] && ! is_absolute_path "$FS_DIR"; then
 		fatal "--fs-dir must be an absolute path, got '$FS_DIR'."
@@ -690,6 +889,14 @@ add_missing() {
 # every option of an enabled group must already have a value.
 validate_non_interactive() {
 	MISSING=""
+
+	# Only the host and the password have no defaults. The role and the database
+	# fall back to `mosaico`, which is what the embedded arrangement uses too.
+	if [ "$PG_MODE" = "external" ]; then
+		if [ -z "$PG_HOST" ] || [ -z "$PG_PASSWORD" ]; then
+			add_missing "Database mode 'external' requires --pg-host and --pg-password."
+		fi
+	fi
 
 	if [ "$STORE_BACKEND" = "obj" ]; then
 		if [ -z "$OBJ_ENDPOINT" ] || [ -z "$OBJ_ACCESS_KEY" ] || [ -z "$OBJ_SECRET_KEY" ]; then
@@ -853,8 +1060,47 @@ section() {
 configure_interactive() {
 	info "Interactive configuration started. Press Enter to accept [default values]."
 
-	# --- [1/5] Storage ---
-	section "[1/5] Storage Configuration"
+	# --- [1/6] Database ---
+	#
+	# Asked first, and defaulted to the embedded container: it is the choice that
+	# decides whether anything has to exist on the host before Mosaico can run, so
+	# an evaluator pressing Enter through the questionnaire gets a working database
+	# without having provisioned one.
+	section "[1/6] PostgreSQL Database"
+	if [ "$PG_MODE_SET" -eq 0 ]; then
+		tty_print "${BOLD}?${RESET} Choose how mosaicod reaches PostgreSQL:"
+		tty_print "  ${VIOLET}>${RESET} [1] Install an embedded PostgreSQL container (nothing needed beforehand)"
+		tty_print "    [2] Use a PostgreSQL instance I already have"
+		while :; do
+			_choice="$(ask_plain "  Select [1-2] (default: 1): " "1")"
+			case "$(lower "$_choice")" in
+				1|embedded|internal|local) PG_MODE="embedded"; break ;;
+				2|external|existing|remote) PG_MODE="external"; break ;;
+				*) tty_print "  ${RED}Please enter 1 or 2.${RESET}" ;;
+			esac
+		done
+		echo
+	else
+		info "Database mode '$PG_MODE' taken from the command line."
+	fi
+
+	if [ "$PG_MODE" = "external" ]; then
+		echo "  The database and the role have to exist already; mosaicod creates its"
+		echo "  own schema inside them on first start."
+		[ "$PG_HOST_SET" -eq 1 ] || PG_HOST="$(ask_required \
+			"PostgreSQL host or address (e.g., db.example.com or 10.0.0.5)" \
+			is_valid_host "Enter a host name or an address; an IPv6 literal needs brackets.")"
+		[ "$PG_PORT_SET" -eq 1 ] || PG_PORT="$(ask_required \
+			"PostgreSQL port" is_valid_port "Enter a port number between 1 and 65535." "$PG_PORT")"
+		[ "$PG_DB_SET" -eq 1 ] || PG_DB="$(ask_required \
+			"Database name" "" "" "$PG_DB")"
+		[ "$PG_USER_SET" -eq 1 ] || PG_USER="$(ask_required \
+			"Database user" "" "" "$PG_USER")"
+		[ "$PG_PASSWORD_SET" -eq 1 ] || PG_PASSWORD="$(ask_secret "Database password")"
+	fi
+
+	# --- [2/6] Storage ---
+	section "[2/6] Storage Configuration"
 	if [ "$STORE_BACKEND_SET" -eq 0 ]; then
 		tty_print "${BOLD}?${RESET} Choose storage backend:"
 		tty_print "  ${VIOLET}>${RESET} [1] Local Filesystem (fs)"
@@ -887,8 +1133,8 @@ configure_interactive() {
 		[ "$OBJ_SECRET_KEY_SET" -eq 1 ] || OBJ_SECRET_KEY="$(ask_secret "Secret Key")"
 	fi
 
-	# --- [2/5] TLS & domain ---
-	section "[2/5] TLS & Domain Setup"
+	# --- [3/6] TLS & domain ---
+	section "[3/6] TLS & Domain Setup"
 	if [ "$ENABLE_TLS_SET" -eq 0 ]; then
 		if ask_yn "Do you want to configure TLS/HTTPS?" "n"; then
 			ENABLE_TLS=1
@@ -927,12 +1173,12 @@ configure_interactive() {
 		fi
 	fi
 
-	# --- [3/5] Security ---
+	# --- [4/6] Security ---
 	#
 	# Note the asymmetry with -y: unattended runs default to *not* creating a
 	# key (--api-key opts in), while here the suggested answer is yes, because
 	# an evaluator following the prompts needs a key to talk to the daemon.
-	section "[3/5] Security & API Keys"
+	section "[4/6] Security & API Keys"
 	if [ "$API_KEY_SET" -eq 0 ]; then
 		if ask_yn "Do you want to generate an initial Master API Key for clients?" "y"; then
 			API_KEY=1
@@ -941,12 +1187,12 @@ configure_interactive() {
 		fi
 	fi
 
-	# --- [4/5] Retention ---
+	# --- [5/6] Retention ---
 	#
 	# Stated before it is questioned: cleanup is on unless the user says otherwise,
 	# so the first prompt is the opt-out, and the values are only revisited once
 	# they have decided to keep the routine.
-	section "[4/5] Data Retention & Cleanup"
+	section "[5/6] Data Retention & Cleanup"
 	if [ "$CLEANUP_SET" -eq 0 ]; then
 		echo "  The cleanup routine prunes obsolete dataset frames and runs by default,"
 		echo "  with mosaicod's own settings: ${BOLD}$CLEANUP_DEFAULT_HINT${RESET}."
@@ -976,8 +1222,8 @@ configure_interactive() {
 			"Use a number followed by h, d, w or m (e.g. 7d).")"
 	fi
 
-	# --- [5/5] Python SDK ---
-	section "[5/5] Python SDK"
+	# --- [6/6] Python SDK ---
+	section "[6/6] Python SDK"
 	if [ "$SDK_SET" -eq 0 ]; then
 		echo "  The Python SDK ($SDK_PACKAGE) is installed into a virtual environment"
 		echo "  at $SDK_VENV, leaving the system interpreter untouched."
@@ -1006,10 +1252,34 @@ cleanup_summary() {
 	fi
 }
 
+# A container has a loopback address of its own, so 127.0.0.1 there is the
+# container and not the host: an instance running on this machine has to be
+# addressed as host.containers.internal, which Podman resolves to the host.
+# Computed before the summary so that what is printed is what will be written.
+derive_pg_container_host() {
+	[ "$PG_MODE" = "external" ] || return 0
+
+	PG_HOST_IN_CONTAINER="$PG_HOST"
+	case "$(lower "$PG_HOST")" in
+		localhost|localhost.localdomain|127.*|0.0.0.0|::1|"[::1]")
+			PG_HOST_IS_LOCAL=1
+			PG_HOST_IN_CONTAINER="host.containers.internal"
+			;;
+	esac
+}
+
 print_summary() {
 	echo
 	echo "${DIM}--------------------------------------------------------------------------------${RESET}"
 	echo "${BOLD}Configuration Summary:${RESET}"
+	if [ "$PG_MODE" = "embedded" ]; then
+		echo "  - Database        : Embedded PostgreSQL container (created and managed here)"
+	else
+		echo "  - Database        : Existing PostgreSQL at $PG_HOST:$PG_PORT/$PG_DB as $PG_USER"
+		if [ "$PG_HOST_IS_LOCAL" -eq 1 ]; then
+			echo "                      ${DIM}reached from the container as $PG_HOST_IN_CONTAINER${RESET}"
+		fi
+	fi
 	if [ "$STORE_BACKEND" = "fs" ]; then
 		echo "  - Storage Backend : Local Filesystem ($FS_DIR)"
 	else
@@ -1478,24 +1748,37 @@ MASTER_API_KEY=""
 write_secrets() {
 	if is_dry_run; then
 		step_line "Writing configuration secrets to $MOSAICOD_ENV_FILE"
-		echo "  ${DIM}(dry-run)${RESET} generate PostgreSQL password and mosaicod.env"
+		if [ "$PG_MODE" = "embedded" ]; then
+			echo "  ${DIM}(dry-run)${RESET} generate PostgreSQL password and mosaicod.env"
+		else
+			echo "  ${DIM}(dry-run)${RESET} write mosaicod.env pointing at $PG_HOST_IN_CONTAINER:$PG_PORT/$PG_DB"
+		fi
 		return 0
 	fi
 
-	password="$(read_or_create_secret "$SECRETS_DIR/postgres_password" gen_password)"
-
 	step_line "Writing configuration secrets to $MOSAICOD_ENV_FILE"
-
-	as_root "umask 077 && cat > $SECRETS_DIR/postgres.env" <<-EOF
-	POSTGRES_USER=mosaico
-	POSTGRES_DB=mosaico
-	POSTGRES_PASSWORD=$password
-	EOF
 
 	# Built up incrementally so each optional feature contributes only the keys
 	# it actually needs. This file is also what the CLI wrapper feeds back into
 	# `podman exec --env-file`, so it must stay a plain KEY=VALUE list.
-	env_body="MOSAICOD_DB_URL=postgresql://mosaico:$password@mosaico-postgres:5432/mosaico"
+	#
+	# The embedded database is addressed by container name on the internal
+	# network, with a password generated once and reused; an existing instance is
+	# addressed as the user described it. Either way the credentials are only ever
+	# written to this file, which is root-only, and never to a command line.
+	if [ "$PG_MODE" = "embedded" ]; then
+		password="$(read_or_create_secret "$SECRETS_DIR/postgres_password" gen_password)"
+
+		as_root "umask 077 && cat > $SECRETS_DIR/postgres.env" <<-EOF
+		POSTGRES_USER=mosaico
+		POSTGRES_DB=mosaico
+		POSTGRES_PASSWORD=$password
+		EOF
+
+		env_body="MOSAICOD_DB_URL=postgresql://mosaico:$password@mosaico-postgres:5432/mosaico"
+	else
+		env_body="MOSAICOD_DB_URL=postgresql://$(urlencode "$PG_USER"):$(urlencode "$PG_PASSWORD")@$PG_HOST_IN_CONTAINER:$PG_PORT/$(urlencode "$PG_DB")"
+	fi
 
 	# The store backend is not a setting of its own: mosaicod derives it from the
 	# scheme of the endpoint, so a local backend is a `file://` endpoint.
@@ -1552,9 +1835,24 @@ write_install_conf() {
 		echo "  ${DIM}(dry-run)${RESET} record configuration in $DATA_DIR/install.conf"
 		return 0
 	fi
+	# The database password is deliberately absent: this file is world-readable,
+	# and the credentials belong in the root-only environment file. The other
+	# connection details are only written for an external instance, so that the
+	# record cannot suggest a host that is not in use.
+	pg_record="PG_MODE=$PG_MODE"
+	if [ "$PG_MODE" = "external" ]; then
+		pg_record="$pg_record
+PG_HOST=$PG_HOST
+PG_HOST_IN_CONTAINER=$PG_HOST_IN_CONTAINER
+PG_PORT=$PG_PORT
+PG_USER=$PG_USER
+PG_DB=$PG_DB"
+	fi
+
 	as_root "umask 022 && cat > $DATA_DIR/install.conf" <<-EOF
 	# Generated by mosaico-installer v$SCRIPT_VERSION — do not edit by hand.
 	MOSAICO_VERSION=$MOSAICO_VERSION
+	$pg_record
 	STORE_BACKEND=$STORE_BACKEND
 	FS_DIR=$FS_DIR
 	OBJ_ENDPOINT=$OBJ_ENDPOINT
@@ -1583,24 +1881,29 @@ write_quadlets() {
 	[Network]
 	EOF
 
-	as_root "cat > $QUADLET_DIR/mosaico-postgres.container" <<-EOF
-	[Unit]
-	Description=Mosaico embedded PostgreSQL
+	# Only the embedded arrangement has a database unit. An external instance is
+	# nobody's service here, so nothing is generated for it: it is a connection
+	# string in the environment file and nothing more.
+	if [ "$PG_MODE" = "embedded" ]; then
+		as_root "cat > $QUADLET_DIR/mosaico-postgres.container" <<-EOF
+		[Unit]
+		Description=Mosaico embedded PostgreSQL
 
-	[Container]
-	Image=$POSTGRES_IMAGE
-	ContainerName=mosaico-postgres
-	Network=mosaico.network
-	Volume=mosaico-postgres-data:/var/lib/postgresql:Z
-	EnvironmentFile=$SECRETS_DIR/postgres.env
+		[Container]
+		Image=$POSTGRES_IMAGE
+		ContainerName=mosaico-postgres
+		Network=mosaico.network
+		Volume=mosaico-postgres-data:/var/lib/postgresql:Z
+		EnvironmentFile=$SECRETS_DIR/postgres.env
 
-	[Service]
-	Restart=on-failure
-	TimeoutStartSec=60
+		[Service]
+		Restart=on-failure
+		TimeoutStartSec=60
 
-	[Install]
-	WantedBy=multi-user.target
-	EOF
+		[Install]
+		WantedBy=multi-user.target
+		EOF
+	fi
 
 	# Storage and TLS each contribute lines to [Container]. The unit is assembled
 	# in a variable so that a disabled feature adds nothing at all, rather than
@@ -1640,11 +1943,20 @@ Volume=$FS_DIR:/data:Z"
 Volume=$TLS_DIR:/certs:ro,Z"
 	fi
 
+	# The ordering and the dependency exist only where there is a local unit to
+	# depend on. Keeping them for an external database would leave mosaicod
+	# requiring a service that was never generated, and systemd refuses to start a
+	# unit whose Requires= cannot be resolved.
+	unit="[Unit]
+Description=Mosaico Daemon"
+	if [ "$PG_MODE" = "embedded" ]; then
+		unit="$unit
+After=mosaico-postgres.service
+Requires=mosaico-postgres.service"
+	fi
+
 	as_root "cat > $QUADLET_DIR/mosaicod.container" <<-EOF
-	[Unit]
-	Description=Mosaico Daemon
-	After=mosaico-postgres.service
-	Requires=mosaico-postgres.service
+	$unit
 
 	$container
 
@@ -1722,198 +2034,81 @@ install_cli_wrapper() {
 # itself, so the installer's final output does not have to list commands that
 # may change. Anything version-dependent is left to the online documentation.
 #
-# The page is installed under /usr/local/share/man, which is on the default
-# manpath. mosaicod(1) and mosaico-installer(8) are `.so` stubs pointing at the
-# single mosaico(7) page, so `man` finds it under any of the three names.
-install_man_page() {
-	step_line "Installing man page in $MAN_PAGE"
+# The page itself is not written here: it is $MAN_PAGE_NAME in the installer's
+# repository, which keeps a hundred lines of roff out of this script and lets it
+# be reviewed and rendered on its own. It is installed under
+# /usr/local/share/man, which is on the default manpath. mosaicod(1) and
+# mosaico-installer(8) are `.so` stubs pointing at the single mosaico(7) page, so
+# `man` finds it under any of the three names.
 
+# Puts the page in a temporary file and echoes its path, or returns 1 when it
+# could not be obtained. A checkout is preferred over the network so that a local
+# edit is what gets installed, and so that testing does not depend on the branch
+# being pushed; when the script was piped in, $0 is not a file and only the
+# download applies.
+fetch_man_page() {
+	_man_src=""
+	if [ -f "$0" ]; then
+		_man_local="$(dirname "$0")/$MAN_PAGE_NAME"
+		[ -r "$_man_local" ] && _man_src="$_man_local"
+	fi
+
+	_man_tmp="$(mktemp 2>/dev/null)" || return 1
+
+	if [ -n "$_man_src" ]; then
+		cat "$_man_src" > "$_man_tmp" 2>> "$LOG_FILE" || { rm -f "$_man_tmp"; return 1; }
+	elif command_exists curl; then
+		curl -fsSL "$MAN_PAGE_URL" -o "$_man_tmp" 2>> "$LOG_FILE" || { rm -f "$_man_tmp"; return 1; }
+	elif command_exists wget; then
+		wget -qO "$_man_tmp" "$MAN_PAGE_URL" 2>> "$LOG_FILE" || { rm -f "$_man_tmp"; return 1; }
+	else
+		rm -f "$_man_tmp"
+		return 1
+	fi
+
+	[ -s "$_man_tmp" ] || { rm -f "$_man_tmp"; return 1; }
+
+	# The page carries a placeholder rather than a version of its own: the version
+	# that matters is the installer's, and stamping it in here keeps the two from
+	# drifting apart.
+	if sed "s/@SCRIPT_VERSION@/$SCRIPT_VERSION/g" "$_man_tmp" > "$_man_tmp.stamped" 2>> "$LOG_FILE"; then
+		mv "$_man_tmp.stamped" "$_man_tmp"
+	else
+		rm -f "$_man_tmp.stamped"
+	fi
+
+	printf '%s' "$_man_tmp"
+}
+
+install_man_page() {
 	if is_dry_run; then
-		echo "  ${DIM}(dry-run)${RESET} write $MAN_PAGE"
+		step_line "Installing man page in $MAN_PAGE"
+		echo "  ${DIM}(dry-run)${RESET} fetch $MAN_PAGE_NAME (from this directory, or $MAN_PAGE_URL)"
+		echo "  ${DIM}(dry-run)${RESET} install it as $MAN_PAGE"
 		echo "  ${DIM}(dry-run)${RESET} write $MAN_LINK_CLI and $MAN_LINK_INSTALLER"
 		echo "  ${DIM}(dry-run)${RESET} refresh the man page index (mandb)"
 		return 0
 	fi
 
-	as_root "install -d -m 755 $MAN_DIR/man1 $MAN_DIR/man7 $MAN_DIR/man8"
+	# The only step allowed to fail without failing the installation: everything
+	# the page describes is already installed and working, and the same text is
+	# online. A host with no outbound network is the usual reason to get here.
+	if ! _man_file="$(fetch_man_page)"; then
+		warn "could not obtain $MAN_PAGE_NAME from $MAN_PAGE_URL — 'man mosaico' will not be available. Everything else is installed; see $DOCS_URL."
+		return 0
+	fi
 
-	as_root "cat > $MAN_PAGE" <<-EOF
-	.TH MOSAICO 7 "" "mosaico-installer $SCRIPT_VERSION" "Mosaico"
-	.SH NAME
-	mosaico \- the Mosaico installation on this host: commands, files and removal
-	.SH DESCRIPTION
-	Mosaico runs as two system-level Podman containers supervised by systemd
-	through Quadlet: \fBmosaicod\fR, the Mosaico daemon, and
-	\fBmosaico-postgres\fR, its embedded PostgreSQL database. Both were set up by
-	\fBmosaico-installer\fR(8).
-	.PP
-	This page describes what the installer put on this machine. For the daemon
-	itself, its configuration keys and its API, see the online documentation at
-	$DOCS_URL.
-	.SH COMMANDS
-	.TP
-	.B mosaicod \fIcommand\fB ...
-	Host wrapper around the daemon CLI, installed at $CLI_WRAPPER. It forwards
-	its arguments into the running \fBmosaicod\fR container, so it behaves like a
-	native binary. Run
-	.B mosaicod --help
-	for the commands the installed version supports.
-	.IP
-	The work needs root, because the containers belong to root's Podman and the
-	environment file is readable only by root, but you do not have to ask for it:
-	called from an unprivileged shell the wrapper re-executes itself through
-	\fBsudo\fR, so \fBmosaicod\fR works as an ordinary command and prompts for a
-	password if sudo asks for one. To drop that prompt, grant the command
-	\fINOPASSWD\fR in a \fI/etc/sudoers.d\fR entry. It forwards into a running
-	container, so it reports the container as missing when the daemon is down.
-	.TP
-	.B mosaico-installer \fR[\fIoptions\fR]
-	A copy of the installation script, kept at $INSTALLER_PATH. Use it to
-	re-run the installation, change the configuration, upgrade to another image
-	tag or uninstall. Run
-	.B mosaico-installer --help
-	for the full list of options.
-	.SH SERVICE MANAGEMENT
-	Both containers are ordinary systemd services, managed with the usual tools:
-	.RS 4
-	.nf
-	systemctl status mosaicod.service
-	systemctl restart mosaicod.service
-	journalctl -u mosaicod.service -f
-	.fi
-	.RE
-	.PP
-	The same applies to \fBmosaico-postgres.service\fR. Container-level output is
-	available through \fBpodman logs mosaicod\fR.
-	.PP
-	The daemon listens on port $MOSAICOD_PORT, on every address of the host.
-	.SH TLS
-	mosaicod does not issue certificates. Whatever their origin, the certificate
-	chain and the private key are copied to \fI$TLS_DIR/cert.pem\fR and
-	\fI$TLS_DIR/key.pem\fR, mounted read-only into the container, and read by the
-	daemon only at startup.
-	.PP
-	When the installer obtained the certificate from Let's Encrypt, renewal is
-	automatic. The certbot timer shipped by the distribution does the renewing, and
-	\fI$RENEWAL_HOOK\fR copies each renewed certificate into place and restarts the
-	service. Check that both halves are in order with:
-	.RS 4
-	.nf
-	systemctl list-timers certbot.timer
-	sudo certbot renew --dry-run
-	.fi
-	.RE
-	.PP
-	Renewal repeats the same challenge as the first issuance, so \fBport 443 has to
-	stay open for the TLS challenge\fR. A firewall rule added after installation is
-	the usual reason a renewal that used to work stops working.
-	.PP
-	For a certificate supplied with \fB--tls-cert\fR and \fB--tls-key\fR no hook is
-	installed, and renewal is yours to perform: overwrite the two files and restart
-	the service.
-	.RS 4
-	.nf
-	sudo install -m 600 fullchain.pem $TLS_DIR/cert.pem
-	sudo install -m 600 privkey.pem $TLS_DIR/key.pem
-	sudo systemctl restart mosaicod.service
-	.fi
-	.RE
-	.SH API KEYS
-	When the installation requested a master API key, the daemon runs with key
-	enforcement on and every client must present one. The master key is stored in
-	\fI$SECRETS_DIR/master_api_key\fR and has the \fBmanage\fR permission, which
-	covers reading, writing, deleting and managing other keys.
-	.PP
-	Further keys are managed through the daemon itself, for example:
-	.RS 4
-	.nf
-	mosaicod api-key create --permissions read
-	mosaicod api-key list
-	mosaicod api-key revoke \fIfingerprint\fR
-	.fi
-	.RE
-	.PP
-	Without that request the daemon accepts unauthenticated clients on every
-	address of the host.
-	.SH FILES
-	.TP
-	.I $DATA_DIR/install.conf
-	Non-secret record of the choices made at install time, including the storage
-	backend and the storage directory in use.
-	.TP
-	.I $SECRETS_DIR
-	Generated secrets, readable by root only: the PostgreSQL password, the daemon
-	environment file, the TLS material under \fItls/\fR and, when requested, the
-	master API key.
-	.TP
-	.I $QUADLET_DIR
-	Quadlet unit definitions (\fImosaicod.container\fR,
-	\fImosaico-postgres.container\fR, \fImosaico.network\fR) from which systemd
-	generates the services.
-	.TP
-	.I $SDK_VENV
-	Present only when the installer was run with \fB--sdk\fR: a Python virtual
-	environment holding the \fB$SDK_PACKAGE\fR SDK. Activate it with
-	\fB. $SDK_VENV/bin/activate\fR. Removed by \fB--uninstall\fR.
-	.TP
-	.I $RENEWAL_HOOK
-	Present only when the certificate came from Let's Encrypt. Run by certbot after
-	a renewal, it refreshes the copies under \fI$TLS_DIR\fR and restarts the
-	daemon. Removed by \fB--uninstall\fR; the certificate itself is left in
-	\fI$LE_DIR\fR, since other services on the host may be using it.
-	.PP
-	Dataset frames live either in the local directory recorded as \fBFS_DIR\fR in
-	\fIinstall.conf\fR, or in the configured object store bucket. The database
-	lives in the \fBmosaico-postgres-data\fR Podman volume.
-	.SH CONFIGURATION
-	Configuration is passed to the daemon through
-	\fI$MOSAICOD_ENV_FILE\fR, written by the installer. Re-running
-	\fBmosaico-installer\fR is the supported way to change it; the generated
-	PostgreSQL password and master API key are preserved across runs.
-	.PP
-	Only the options given to the installer are written to that file, so any
-	setting left out keeps the daemon's own default. The data retention values are
-	documented at $CLEANUP_DOCS_URL.
-	.PP
-	The image tag is pinned by the installer rather than tracking \fIlatest\fR,
-	because the generated command line and environment variables belong to one
-	mosaicod release. Upgrade by re-running the installer with
-	\fB--version\fR, not by pulling a newer image under the same unit.
-	.SH UNINSTALLING
-	To stop and remove the services, the containers, the Quadlet units, the two
-	commands and this man page, leaving all stored data in place:
-	.RS 4
-	.nf
-	sudo mosaico-installer --uninstall
-	.fi
-	.RE
-	.PP
-	Stored data is never touched by that command. To wipe it as well, remove the
-	secrets, the storage directory recorded as \fBFS_DIR\fR in \fIinstall.conf\fR
-	and the database volume:
-	.RS 4
-	.nf
-	sudo rm -rf $SECRETS_DIR $DATA_DIR/install.conf
-	sudo rm -rf \fI<storage directory>\fR
-	sudo podman volume rm mosaico-postgres-data
-	.fi
-	.RE
-	.PP
-	The exact commands, with the storage directory filled in, are printed by
-	\fBmosaico-installer --uninstall\fR when it finishes. Data kept in an
-	external object store must be removed there.
-	.SH SEE ALSO
-	.BR systemctl (1),
-	.BR journalctl (1),
-	.BR podman (1),
-	.BR podman-systemd.unit (5)
-	.PP
-	$DOCS_URL
-	EOF
+	step_line "Installing man page in $MAN_PAGE"
+
+	as_root "install -d -m 755 $MAN_DIR/man1 $MAN_DIR/man7 $MAN_DIR/man8"
+	as_root "install -m 644 '$_man_file' $MAN_PAGE"
+	rm -f "$_man_file"
 
 	as_root "printf '.so man7/mosaico.7\n' > $MAN_LINK_CLI"
 	as_root "printf '.so man7/mosaico.7\n' > $MAN_LINK_INSTALLER"
-	as_root "chmod 644 $MAN_PAGE $MAN_LINK_CLI $MAN_LINK_INSTALLER"
+	as_root "chmod 644 $MAN_LINK_CLI $MAN_LINK_INSTALLER"
+
+	MAN_PAGE_INSTALLED=1
 
 	# Refreshing the index is a convenience, not a requirement: the page is
 	# already readable, and minimal systems may ship no mandb at all.
@@ -1953,8 +2148,80 @@ start_service() {
 	exit 1
 }
 
-start_postgres() {
+# Re-running the installer with --pg-host against a host that had the embedded
+# database would otherwise leave that container running and supervised, pointing
+# at data nothing reads any more. The volume is kept: it is the old database, and
+# switching back has to find it there.
+drop_embedded_postgres() {
+	[ "$PG_MODE" = "external" ] || return 0
+
+	if is_dry_run; then
+		echo "  ${DIM}(dry-run)${RESET} remove any embedded PostgreSQL unit left from a previous run"
+		return 0
+	fi
+
+	as_root_capture "test -f $QUADLET_DIR/mosaico-postgres.container && echo yes" \
+		| grep -q '^yes$' || return 0
+
+	step_line "Removing the embedded PostgreSQL container of the previous installation"
+	as_root_ignore_errors "systemctl stop mosaico-postgres.service"
+	as_root_ignore_errors "podman rm -f mosaico-postgres"
+	as_root_ignore_errors "rm -f $QUADLET_DIR/mosaico-postgres.container"
+	warn "the embedded database was removed; its data is still in the mosaico-postgres-data volume, which was left in place."
+}
+
+# Non-fatal: a probe from the host cannot prove what the container will manage,
+# and the tools it needs may not be installed. It is here because a wrong host or
+# a closed port is the likeliest mistake in this configuration, and saying so now
+# is clearer than the daemon's own failure a few steps later.
+check_external_postgres() {
+	step "Checking the PostgreSQL instance at $PG_HOST:$PG_PORT..."
+
+	if is_dry_run; then
+		step_ok "skipped (dry-run)"
+		return 0
+	fi
+
+	# Both probes run unprivileged: they only open a socket, and pg_isready reports
+	# a server as accepting connections without authenticating, so neither of them
+	# sees the password.
+	if command_exists pg_isready; then
+		if pg_isready -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -t 5 >> "$LOG_FILE" 2>&1; then
+			step_ok "Accepting connections"
+		else
+			step_ok "unreachable"
+			warn "pg_isready could not reach $PG_HOST:$PG_PORT from this host. The installation continues, but mosaicod will fail to start if the database is not reachable from the container."
+		fi
+	elif command_exists nc; then
+		if nc -z -w 5 "$PG_HOST" "$PG_PORT" >> "$LOG_FILE" 2>&1; then
+			step_ok "Port open"
+		else
+			step_ok "unreachable"
+			warn "nothing is listening on $PG_HOST:$PG_PORT as seen from this host. The installation continues, but mosaicod will fail to start if the database is not reachable from the container."
+		fi
+	else
+		step_ok "skipped (no pg_isready or nc on this host)"
+	fi
+
+	if [ "$PG_HOST_IS_LOCAL" -eq 1 ]; then
+		warn "PostgreSQL is on this machine, so the container reaches it as $PG_HOST_IN_CONTAINER: it has to listen on an address other than the host loopback (listen_addresses) and accept the container network in pg_hba.conf. Passing the host's LAN address as --pg-host avoids this."
+	fi
+}
+
+# Brings up whatever the database arrangement needs before the daemon starts. The
+# daemon-reload is here rather than in start_postgres because it has to happen in
+# both cases: it is what makes systemd see the units just written.
+prepare_database() {
 	as_root "systemctl daemon-reload"
+
+	if [ "$PG_MODE" = "embedded" ]; then
+		start_postgres
+	else
+		check_external_postgres
+	fi
+}
+
+start_postgres() {
 	start_service "mosaico-postgres.service"
 
 	if is_dry_run; then
@@ -2074,6 +2341,17 @@ do_uninstall() {
 		if [ -n "$recorded" ]; then FS_DIR="$recorded"; fi
 		recorded="$(read_install_conf STORE_BACKEND)"
 		if [ -n "$recorded" ]; then STORE_BACKEND="$recorded"; fi
+		# Same reason as the storage keys above: the hint at the end must not offer
+		# to delete a database volume that was never created, nor stay silent about
+		# an external instance this command does not touch.
+		recorded="$(read_install_conf PG_MODE)"
+		if [ -n "$recorded" ]; then PG_MODE="$recorded"; fi
+		recorded="$(read_install_conf PG_HOST)"
+		if [ -n "$recorded" ]; then PG_HOST="$recorded"; fi
+		recorded="$(read_install_conf PG_PORT)"
+		if [ -n "$recorded" ]; then PG_PORT="$recorded"; fi
+		recorded="$(read_install_conf PG_DB)"
+		if [ -n "$recorded" ]; then PG_DB="$recorded"; fi
 	fi
 
 	as_root_ignore_errors "systemctl stop mosaicod.service"
@@ -2119,7 +2397,17 @@ do_uninstall() {
 	if [ "$STORE_BACKEND" = "fs" ]; then
 		echo "${BOLD}    sudo rm -rf $FS_DIR${RESET}"
 	fi
-	echo "${BOLD}    sudo podman volume rm $volumes${RESET}"
+	# The volume exists only where the database was embedded. For an external
+	# instance there is nothing local to remove, and dropping the schema is the
+	# operator's call on a server this installer does not own.
+	if [ "$PG_MODE" = "embedded" ]; then
+		echo "${BOLD}    sudo podman volume rm $volumes${RESET}"
+	fi
+	if [ "$PG_MODE" != "embedded" ]; then
+		echo
+		echo "  The PostgreSQL instance at $PG_HOST:$PG_PORT is not touched by these"
+		echo "  commands: drop the '$PG_DB' database there if you want the metadata gone."
+	fi
 	if [ "$STORE_BACKEND" != "fs" ]; then
 		echo
 		echo "  Dataset frames stored in the object store bucket are not touched by"
@@ -2156,6 +2444,12 @@ print_success() {
 				echo "  ${VIOLET}➜${RESET}  Public:   $scheme://$public_ip:$MOSAICOD_PORT"
 			fi
 		fi
+	fi
+
+	if [ "$PG_MODE" = "external" ]; then
+		echo
+		echo "  Database: PostgreSQL at $PG_HOST:$PG_PORT/$PG_DB as $PG_USER"
+		echo "  ${DIM}Not managed by this installer — backups and upgrades are yours.${RESET}"
 	fi
 
 	echo
@@ -2203,8 +2497,15 @@ print_success() {
 	fi
 
 	echo
-	echo "  Installed commands, file locations and how to uninstall:"
-	echo "    ${BOLD}man mosaico${RESET}"
+	if [ "$MAN_PAGE_INSTALLED" -eq 1 ]; then
+		echo "  Installed commands, file locations and how to uninstall:"
+		echo "    ${BOLD}man mosaico${RESET}"
+	else
+		# The page could not be fetched, so pointing at `man mosaico` would send the
+		# user to a page that is not there.
+		echo "  Installed commands, file locations and how to uninstall:"
+		echo "    ${BOLD}$MAN_PAGE_URL${RESET}"
+	fi
 	echo
 	echo "  Documentation: ${DIM}$DOCS_URL${RESET}"
 	echo
@@ -2216,16 +2517,19 @@ do_install() {
 	if [ "$NON_INTERACTIVE" -eq 1 ]; then
 		print_logo "Unattended Setup"
 		validate_non_interactive
-		print_summary
 	else
 		if ! has_tty; then
 			fatal "no terminal available for interactive setup. Re-run with -y and the required flags (see --help)."
 		fi
 		print_logo "Interactive Setup"
 		configure_interactive
-		print_summary
-		confirm_summary
 	fi
+
+	# After the configuration is complete either way, and before it is shown: the
+	# host the container will use is part of what the summary has to report.
+	derive_pg_container_host
+	print_summary
+	[ "$NON_INTERACTIVE" -eq 1 ] || confirm_summary
 
 	is_dry_run && echo "${YELLOW}# --dry-run: no changes will be made${RESET}"
 
@@ -2243,9 +2547,12 @@ do_install() {
 	install_tls_material
 	write_secrets
 	write_install_conf
+	# Before write_quadlets: it decides which units exist, so a leftover database
+	# unit has to be gone before the new set is written and reloaded.
+	drop_embedded_postgres
 	write_quadlets
 	install_cli_wrapper
-	start_postgres
+	prepare_database
 	start_mosaicod
 	create_master_api_key
 	# After the service exists and is running: the hook restarts it, so installing
