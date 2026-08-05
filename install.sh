@@ -805,10 +805,32 @@ is_absolute_path() {
 	esac
 }
 
+# True when every character of the path is one that stays literal once embedded,
+# single-quoted, in the command strings as_root() hands to eval / sudo sh -c. A
+# stray apostrophe would close that quote early and let the rest of the value run
+# as a second command; the other characters here (including spaces, to keep the
+# character class parseable by dash) are excluded for the same reason.
+is_shell_safe() {
+	_ss_rest="$1"
+	while [ -n "$_ss_rest" ]; do
+		_ss_char="${_ss_rest%"${_ss_rest#?}"}"
+		_ss_rest="${_ss_rest#?}"
+		case "$_ss_char" in
+			[A-Za-z0-9./_:@+,~-]) ;;
+			*) return 1 ;;
+		esac
+	done
+	return 0
+}
+
+is_safe_absolute_path() {
+	is_absolute_path "$1" && is_shell_safe "$1"
+}
+
 # A private key is usually unreadable by the invoking user, hence the privileged
 # probe. Skipped under --dry-run, which must not ask for a sudo password.
 is_readable_file() {
-	is_absolute_path "$1" || return 1
+	is_safe_absolute_path "$1" || return 1
 	[ -r "$1" ] && return 0
 	is_dry_run && return 0
 	as_root_capture "test -r '$1' && echo yes" 2>/dev/null | grep -q '^yes$'
@@ -847,8 +869,8 @@ validate_flags() {
 		fatal "--pg-port '$PG_PORT' is not a valid port number."
 	fi
 
-	if [ "$FS_DIR_SET" -eq 1 ] && ! is_absolute_path "$FS_DIR"; then
-		fatal "--fs-dir must be an absolute path, got '$FS_DIR'."
+	if [ "$FS_DIR_SET" -eq 1 ] && ! is_safe_absolute_path "$FS_DIR"; then
+		fatal "--fs-dir must be an absolute path made only of letters, digits and ./_:@+,~- , got '$FS_DIR'."
 	fi
 	if [ "$OBJ_ENDPOINT_SET" -eq 1 ] && ! is_valid_endpoint "$OBJ_ENDPOINT"; then
 		fatal "--obj-endpoint must start with http:// or https://, got '$OBJ_ENDPOINT'."
@@ -860,10 +882,10 @@ validate_flags() {
 		fatal "--domain '$DOMAIN' is not a valid fully qualified domain name."
 	fi
 	if [ "$TLS_CERT_SET" -eq 1 ] && ! is_readable_file "$TLS_CERT"; then
-		fatal "--tls-cert '$TLS_CERT' is not an absolute path to a readable file."
+		fatal "--tls-cert '$TLS_CERT' is not an absolute path, made only of letters, digits and ./_:@+,~- , to a readable file."
 	fi
 	if [ "$TLS_KEY_SET" -eq 1 ] && ! is_readable_file "$TLS_KEY"; then
-		fatal "--tls-key '$TLS_KEY' is not an absolute path to a readable file."
+		fatal "--tls-key '$TLS_KEY' is not an absolute path, made only of letters, digits and ./_:@+,~- , to a readable file."
 	fi
 	if [ "$CLEANUP_RETENTION_SET" -eq 1 ]; then
 		is_valid_duration "$CLEANUP_RETENTION" || \
@@ -1120,8 +1142,8 @@ configure_interactive() {
 
 	if [ "$STORE_BACKEND" = "fs" ]; then
 		[ "$FS_DIR_SET" -eq 1 ] || FS_DIR="$(ask_required \
-			"Local storage directory" is_absolute_path \
-			"Please enter an absolute path (starting with /)." "$FS_DIR")"
+			"Local storage directory" is_safe_absolute_path \
+			"Please enter an absolute path (starting with /), using only letters, digits and ./_:@+,~- ." "$FS_DIR")"
 	else
 		[ "$OBJ_ENDPOINT_SET" -eq 1 ] || OBJ_ENDPOINT="$(ask_required \
 			"Object Storage Endpoint (e.g., https://s3.amazonaws.com or http://minio:9000)" \
@@ -1176,10 +1198,10 @@ configure_interactive() {
 		if [ "$USE_CERTBOT" -eq 0 ]; then
 			[ "$TLS_CERT_SET" -eq 1 ] || TLS_CERT="$(ask_required \
 				"Path of the PEM certificate chain for $DOMAIN (e.g., /etc/ssl/mosaico/fullchain.pem)" \
-				is_readable_file "That is not an absolute path to a readable file.")"
+				is_readable_file "That is not an absolute path, using only letters, digits and ./_:@+,~- , to a readable file.")"
 			[ "$TLS_KEY_SET" -eq 1 ] || TLS_KEY="$(ask_required \
 				"Path of the matching PEM private key (e.g., /etc/ssl/mosaico/privkey.pem)" \
-				is_readable_file "That is not an absolute path to a readable file.")"
+				is_readable_file "That is not an absolute path, using only letters, digits and ./_:@+,~- , to a readable file.")"
 		fi
 	fi
 
