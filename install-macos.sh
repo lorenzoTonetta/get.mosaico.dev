@@ -2043,7 +2043,7 @@ install_cli_wrapper() {
 	step_line "Creating CLI wrapper in $_wrapper"
 
 	if is_dry_run; then
-		echo "  ${DIM}(dry-run)${RESET} write $_wrapper and chmod +x"
+		echo "  ${DIM}(dry-run)${RESET} write $_wrapper and chmod 755"
 		return 0
 	fi
 
@@ -2081,7 +2081,9 @@ install_cli_wrapper() {
 
 	exec "\$PODMAN" --connection "\$CONNECTION" exec \$TTY_ARGS \$ENV_ARGS "\$CONTAINER" mosaicod "\$@"
 	EOF
-	run_cmd "chmod +x '$_wrapper'"
+	# An absolute mode, not +x: `cat >` creates the file according to the current
+	# umask, which +x would only add the execute bit on top of.
+	run_cmd "chmod 755 '$_wrapper'"
 }
 
 install_installer() {
@@ -2100,7 +2102,9 @@ install_installer() {
 		# path on disk.
 		run_cmd "curl -fsSL $INSTALLER_URL -o '$_installer'"
 	fi
-	run_cmd "chmod +x '$_installer'"
+	# An absolute mode, not +x: cp/curl create the file according to the current
+	# umask, which +x would only add the execute bit on top of.
+	run_cmd "chmod 755 '$_installer'"
 }
 
 # Brings Mosaico back after a reboot: a starter script, and a LaunchAgent that runs
@@ -2110,7 +2114,7 @@ install_launch_agent() {
 	step_line "Installing the login starter in $STARTER"
 
 	if is_dry_run; then
-		echo "  ${DIM}(dry-run)${RESET} write $STARTER and chmod +x"
+		echo "  ${DIM}(dry-run)${RESET} write $STARTER and chmod 755"
 		echo "  ${DIM}(dry-run)${RESET} write $LAUNCH_AGENT"
 		echo "  ${DIM}(dry-run)${RESET} launchctl bootout/bootstrap gui/$(id -u) $LAUNCH_AGENT"
 		return 0
@@ -2155,7 +2159,9 @@ install_launch_agent() {
 	"\$PODMAN" --connection "\$CONNECTION" start $MOSAICOD_CONTAINER >/dev/null 2>&1 || true
 	$_start_cleanup
 	EOF
-	run_cmd "chmod +x '$STARTER'"
+	# An absolute mode, not +x: `cat >` creates the file according to the current
+	# umask, which +x would only add the execute bit on top of.
+	run_cmd "chmod 755 '$STARTER'"
 
 	step_line "Installing the LaunchAgent in $LAUNCH_AGENT"
 	run_cmd "install -d -m 755 '$LAUNCH_AGENT_DIR'"

@@ -2093,7 +2093,7 @@ install_cli_wrapper() {
 	step_line "Creating CLI wrapper in $CLI_WRAPPER"
 
 	if is_dry_run; then
-		echo "  ${DIM}(dry-run)${RESET} write $CLI_WRAPPER and chmod +x"
+		echo "  ${DIM}(dry-run)${RESET} write $CLI_WRAPPER and chmod 755"
 		return 0
 	fi
 
@@ -2132,7 +2132,10 @@ install_cli_wrapper() {
 
 	exec podman exec $TTY_ARGS $ENV_ARGS mosaicod mosaicod "$@"
 	WRAPPER_EOF
-	as_root "chmod +x $CLI_WRAPPER"
+	# An absolute mode, not +x: `cat >` under sudo creates the file according to
+	# root's umask, which a hardened host may set to 077, leaving it unreadable to
+	# everyone else; +x would only add the execute bit on top of that.
+	as_root "chmod 755 $CLI_WRAPPER"
 }
 
 # Installed under /usr/local/share/man, which is on the default manpath.
@@ -2396,7 +2399,10 @@ install_installer() {
 		# readable path on disk.
 		as_root "curl -fsSL $INSTALLER_URL -o $INSTALLER_PATH"
 	fi
-	as_root "chmod +x $INSTALLER_PATH"
+	# An absolute mode, not +x: cp/curl under sudo create the file according to
+	# root's umask, which a hardened host may set to 077, leaving it unreadable to
+	# everyone else; +x would only add the execute bit on top of that.
+	as_root "chmod 755 $INSTALLER_PATH"
 }
 
 print_logo() {
