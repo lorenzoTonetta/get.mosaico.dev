@@ -327,7 +327,7 @@ setup_colors() {
 		RESET=$(printf '\033[0m')
 		BOLD=$(printf '\033[1m')
 		DIM=$(printf '\033[2m')
-		VIOLET=$(printf '\033[35m')
+		BRAND=$(printf '\033[38;2;5;163;198m')
 		GREEN=$(printf '\033[32m')
 		YELLOW=$(printf '\033[33m')
 		RED=$(printf '\033[31m')
@@ -335,14 +335,14 @@ setup_colors() {
 		RESET=""
 		BOLD=""
 		DIM=""
-		VIOLET=""
+		BRAND=""
 		GREEN=""
 		YELLOW=""
 		RED=""
 	fi
 }
 
-info()  { printf "${VIOLET}Info:${RESET} %s\n" "$*"; }
+info()  { printf "${BRAND}Info:${RESET} %s\n" "$*"; }
 warn()  { printf "${YELLOW}Warning:${RESET} %s\n" "$*" >&2; }
 fatal() { printf "${RED}Error:${RESET} %s\n" "$*" >&2; exit 1; }
 
@@ -989,7 +989,7 @@ ask() {
 	_q="$1"
 	_def="${2:-}"
 	if [ -n "$_def" ]; then
-		_rendered="$(printf "${BOLD}?${RESET} %s [${VIOLET}%s${RESET}]: " "$_q" "$_def")"
+		_rendered="$(printf "${BOLD}?${RESET} %s [${BRAND}%s${RESET}]: " "$_q" "$_def")"
 	else
 		_rendered="$(printf "${BOLD}?${RESET} %s: " "$_q")"
 	fi
@@ -1088,7 +1088,7 @@ configure_interactive() {
 	section "[1/6] PostgreSQL Database"
 	if [ "$PG_MODE_SET" -eq 0 ]; then
 		tty_print "${BOLD}?${RESET} Choose how mosaicod reaches PostgreSQL:"
-		tty_print "  ${VIOLET}>${RESET} [1] Install an embedded PostgreSQL container (nothing needed beforehand)"
+		tty_print "  ${BRAND}>${RESET} [1] Install an embedded PostgreSQL container (nothing needed beforehand)"
 		tty_print "    [2] Use a PostgreSQL instance I already have"
 		while :; do
 			_choice="$(ask_plain "  Select [1-2] (default: 1): " "1")"
@@ -1122,7 +1122,7 @@ configure_interactive() {
 	section "[2/6] Storage Configuration"
 	if [ "$STORE_BACKEND_SET" -eq 0 ]; then
 		tty_print "${BOLD}?${RESET} Choose storage backend:"
-		tty_print "  ${VIOLET}>${RESET} [1] Local Filesystem (fs)"
+		tty_print "  ${BRAND}>${RESET} [1] Local Filesystem (fs)"
 		tty_print "    [2] Generic Object Storage (obj)"
 		while :; do
 			_choice="$(ask_plain "  Select [1-2] (default: 1): " "1")"
@@ -1438,7 +1438,7 @@ get_package_manager() {
 # producing the "+ Doing something... OK" shape.
 
 step() {
-	printf "${VIOLET}+${RESET} %s" "$*"
+	printf "${BRAND}+${RESET} %s" "$*"
 }
 
 step_ok() {
@@ -1446,7 +1446,7 @@ step_ok() {
 }
 
 step_line() {
-	printf "${VIOLET}+${RESET} %s\n" "$*"
+	printf "${BRAND}+${RESET} %s\n" "$*"
 }
 
 # --- Install Steps ---
@@ -2321,18 +2321,12 @@ install_installer() {
 
 print_logo() {
 	echo
-	echo "${VIOLET}${BOLD}███╗   ███╗ ██████╗ ███████╗ █████╗ ██╗ ██████╗ ██████╗${RESET}"
-	echo "${VIOLET}${BOLD}████╗ ████║██╔═══██╗██╔════╝██╔══██╗██║██╔════╝██╔═══██╗${RESET}"
-	echo "${VIOLET}${BOLD}██╔████╔██║██║   ██║███████╗███████║██║██║     ██║   ██║${RESET}"
-	echo "${VIOLET}${BOLD}██║╚██╔╝██║██║   ██║╚════██║██╔══██║██║██║     ██║   ██║${RESET}"
-	echo "${VIOLET}${BOLD}██║ ╚═╝ ██║╚██████╔╝███████║██║  ██║██║╚██████╗╚██████╔╝${RESET}"
-	echo "${VIOLET}${BOLD}╚═╝     ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝╚═╝ ╚═════╝ ╚═════╝${RESET}"
+	echo "${BOLD}                           ▀▀${RESET}"
+	echo "${BOLD}███▄███▄ ▄███▄ ▄█▀▀▀  ▀▀█▄ ██  ▄████ ▄███▄${RESET}"
+	echo "${BOLD}██ ██ ██ ██ ██ ▀███▄ ▄█▀██ ██  ██    ██ ██${RESET}"
+	echo "${BOLD}██ ██ ██ ▀███▀ ▄▄▄█▀ ▀█▄██ ██▄ ▀████ ▀███▀${RESET}"
 	echo
-	echo "     ${BOLD}The Data Platform for Robotics and Physical AI${RESET}"
-	if [ -n "$1" ]; then
-		echo "                  ${BOLD}$1${RESET}"
-	fi
-	echo
+	echo "  ${BRAND}➜${RESET}  System detected: ${BRAND}${BOLD}Linux${RESET}"
 }
 
 # --- Uninstall ---
@@ -2345,6 +2339,7 @@ read_install_conf() {
 
 do_uninstall() {
 	print_logo
+	echo
 	echo "${YELLOW}Executing Mosaico uninstall script...${RESET}"
 	echo
 
@@ -2436,22 +2431,22 @@ print_success() {
 	echo
 	echo "${GREEN}${BOLD}  Mosaico is up and running!${RESET}"
 	echo
-	echo "  ${VIOLET}➜${RESET}  Local:    $scheme://127.0.0.1:$MOSAICOD_PORT"
+	echo "  ${BRAND}➜${RESET}  Local:    $scheme://127.0.0.1:$MOSAICOD_PORT"
 
 	# With TLS only the certified name is advertised: the daemon does answer on every
 	# address, but a client connecting to a bare IP would fail certificate validation.
 	if [ "$ENABLE_TLS" -eq 1 ]; then
-		echo "  ${VIOLET}➜${RESET}  Domain:   $scheme://$DOMAIN:$MOSAICOD_PORT"
+		echo "  ${BRAND}➜${RESET}  Domain:   $scheme://$DOMAIN:$MOSAICOD_PORT"
 	else
 		if command_exists hostname; then
 			for ip in $(hostname -I 2>/dev/null); do
-				echo "  ${VIOLET}➜${RESET}  Network:  $scheme://$ip:$MOSAICOD_PORT"
+				echo "  ${BRAND}➜${RESET}  Network:  $scheme://$ip:$MOSAICOD_PORT"
 			done
 		fi
 		if command_exists curl; then
 			public_ip=$(curl -s --max-time 2 ifconfig.me 2>/dev/null || true)
 			if [ -n "$public_ip" ]; then
-				echo "  ${VIOLET}➜${RESET}  Public:   $scheme://$public_ip:$MOSAICOD_PORT"
+				echo "  ${BRAND}➜${RESET}  Public:   $scheme://$public_ip:$MOSAICOD_PORT"
 			fi
 		fi
 	fi
@@ -2465,7 +2460,7 @@ print_success() {
 	echo
 	echo "  Security credentials saved to $SECRETS_DIR/"
 	if [ -n "$MASTER_API_KEY" ]; then
-		echo "  ${VIOLET}➜${RESET}  Master API Key:  $(printf '%s' "$MASTER_API_KEY" | cut -c1-29)..."
+		echo "  ${BRAND}➜${RESET}  Master API Key:  $(printf '%s' "$MASTER_API_KEY" | cut -c1-29)..."
 		echo "     ${DIM}Full key: $SECRETS_DIR/master_api_key${RESET}"
 	elif [ "$API_KEY" -eq 0 ]; then
 		# The daemon answers on every address of the host, so "no API key" means a
@@ -2525,13 +2520,14 @@ print_success() {
 
 do_install() {
 	if [ "$NON_INTERACTIVE" -eq 1 ]; then
-		print_logo "Unattended Setup"
+		print_logo
 		validate_non_interactive
 	else
 		if ! has_tty; then
 			fatal "no terminal available for interactive setup. Re-run with -y and the required flags (see --help)."
 		fi
-		print_logo "Interactive Setup"
+		print_logo
+		echo
 		configure_interactive
 	fi
 
@@ -2543,7 +2539,7 @@ do_install() {
 	is_dry_run && echo "${YELLOW}# --dry-run: no changes will be made${RESET}"
 
 	if [ "$user" != "root" ]; then
-		info "Not running as root: this script will use '$sh_c' for the steps that need it."
+		info "Not running as root: this script will ask for privilege escalation only if required and for a limited set of commands."
 		echo
 	fi
 
