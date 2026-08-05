@@ -1,12 +1,10 @@
-.\" Man page for a Mosaico installation, installed by install.sh as
-.\" /usr/local/share/man/man7/mosaico.7 — the installer either picks it up from
-.\" its own directory or downloads this file from the repository.
+.\" Installed by install.sh as /usr/local/share/man/man7/mosaico.7, from its own
+.\" directory or downloaded from the repository.
 .\"
 .\" @SCRIPT_VERSION@ is substituted with the installer's version at install time.
 .\"
-.\" Every path here is duplicated from a constant in install.sh (DATA_DIR,
-.\" SECRETS_DIR, QUADLET_DIR, CLI_WRAPPER, MOSAICOD_PORT, ...). Changing one of
-.\" those constants means editing this page too; nothing checks that they agree.
+.\" Every path here duplicates a constant in install.sh (DATA_DIR, SECRETS_DIR,
+.\" QUADLET_DIR, ...). Changing one means editing this page too; nothing checks it.
 .TH MOSAICO 7 "" "mosaico-installer @SCRIPT_VERSION@" "Mosaico"
 .SH NAME
 mosaico \- the Mosaico installation on this host: commands, files and removal
@@ -15,7 +13,10 @@ Mosaico runs as a system-level Podman container supervised by systemd through
 Quadlet: \fBmosaicod\fR, the Mosaico daemon. Its PostgreSQL database runs
 alongside it in a second container, \fBmosaico-postgres\fR, unless the
 installation was pointed at a PostgreSQL instance of your own — see
-\fBDATABASE\fR below. Everything was set up by \fBmosaico-installer\fR(8).
+\fBDATABASE\fR below. A third container, \fBmosaico-cleanup\fR, runs the data
+retention routine, which since mosaicod 0.6 is a command of its own rather than
+part of the daemon; it is absent when the installation declined it. Everything
+was set up by \fBmosaico-installer\fR(8).
 .PP
 This page describes what the installer put on this machine. For the daemon
 itself, its configuration keys and its API, see the online documentation at
@@ -53,10 +54,13 @@ journalctl -u mosaicod.service -f
 .fi
 .RE
 .PP
-The same applies to \fBmosaico-postgres.service\fR when the database is embedded.
+The same applies to \fBmosaico-postgres.service\fR when the database is embedded
+and to \fBmosaico-cleanup.service\fR when the retention routine is in use.
 Container-level output is available through \fBpodman logs mosaicod\fR.
 .PP
-The daemon listens on port 6726, on every address of the host.
+The daemon listens on every address of the host, on the port recorded as
+\fBMOSAICOD_PORT\fR in \fI/var/lib/mosaico/install.conf\fR. That is 6726 — the
+port clients and the SDK assume — unless the installation was given \fB--port\fR.
 .SH DATABASE
 mosaicod keeps its metadata in PostgreSQL, reached through the
 \fBMOSAICOD_DB_URL\fR connection string in
@@ -127,10 +131,14 @@ sudo systemctl restart mosaicod.service
 .SH API KEYS
 When the installation requested a master API key, the daemon runs with key
 enforcement on and every client must present one. The master key is stored in
-\fI/var/lib/mosaico/secrets/master_api_key\fR and has the \fBmanage\fR
-permission, which covers reading, writing, deleting and managing other keys.
+\fI/var/lib/mosaico/secrets/master_api_key\fR and holds \fBread|write|delete\fR,
+which since mosaicod 0.6 is the whole set: the \fBmanage\fR permission of earlier
+releases was removed in favour of granular ones, so a key that grants all three
+is the closest equivalent.
 .PP
-Further keys are managed through the daemon itself, for example:
+Managing keys is not a permission. The commands below reach the database
+directly, so what they need is the ability to run them in the container — no key
+is presented, and one of these commands works even when enforcement is off:
 .RS 4
 .nf
 mosaicod api-key create --permissions read
@@ -144,9 +152,10 @@ address of the host.
 .SH FILES
 .TP
 .I /var/lib/mosaico/install.conf
-Non-secret record of the choices made at install time, including the storage
-backend and the storage directory in use, the database mode and, for an external
-database, its host, port, database name and role.
+Non-secret record of the choices made at install time, including the port the
+daemon serves on, the storage backend and the storage directory in use, the
+database mode and, for an external database, its host, port, database name and
+role.
 .TP
 .I /var/lib/mosaico/secrets
 Generated secrets, readable by root only: the daemon environment file, the TLS
@@ -154,9 +163,10 @@ material under \fItls/\fR, the PostgreSQL password and \fIpostgres.env\fR when
 the database is embedded and, when requested, the master API key.
 .TP
 .I /etc/containers/systemd
-Quadlet unit definitions (\fImosaicod.container\fR, \fImosaico.network\fR and,
-for an embedded database, \fImosaico-postgres.container\fR) from which systemd
-generates the services.
+Quadlet unit definitions (\fImosaicod.container\fR, \fImosaico.network\fR, for an
+embedded database \fImosaico-postgres.container\fR and, unless retention was
+declined, \fImosaico-cleanup.container\fR) from which systemd generates the
+services.
 .TP
 .I /opt/mosaico
 Present only when the installer was run with \fB--sdk\fR: a Python virtual
@@ -179,7 +189,13 @@ PostgreSQL password and master API key are preserved across runs, and so are
 hand-made edits to that file only until the next run overwrites them.
 .PP
 Only the options given to the installer are written to that file, so any
-setting left out keeps the daemon's own default. The data retention values are
+setting left out keeps the daemon's own default.
+.PP
+Retention is not configured there. The routine is a separate command, so its two
+values are flags on \fImosaico-cleanup.container\fR — \fB--time-interval\fR and
+\fB--retention-duration\fR, both in seconds. Re-run the installer with
+\fB--cleanup-time-interval\fR and \fB--cleanup-retention\fR to change them, or
+with \fB--no-cleanup\fR to remove the container altogether. The values are
 documented at https://docs.mosaico.dev/config/cleanup.
 .PP
 The image tag is pinned by the installer rather than tracking \fIlatest\fR,
