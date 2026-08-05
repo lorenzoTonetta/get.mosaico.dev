@@ -5,7 +5,7 @@
 .\"
 .\" Every path here duplicates a constant in install.sh (DATA_DIR, SECRETS_DIR,
 .\" QUADLET_DIR, ...). Changing one means editing this page too; nothing checks it.
-.TH MOSAICO 7 "" "mosaico-installer @SCRIPT_VERSION@" "Mosaico"
+.TH MOSAICO 7 "" "mosaicoctl @SCRIPT_VERSION@" "Mosaico"
 .SH NAME
 mosaico \- The Data Platform for Robotics and Physical AI
 .SH DESCRIPTION
@@ -26,7 +26,7 @@ manipulation, are shipped as \fIAlchemies\fR.
 On this host mosaicod is supervised by systemd as \fBmosaicod.service\fR (see
 \fBSERVICE MANAGEMENT\fR and \fBQUADLET\fR below for how) and keeps its
 metadata in PostgreSQL (see \fBDATABASE\fR below for that). Everything was set
-up by \fBmosaico-installer\fR(8).
+up by \fBmosaicoctl\fR(8).
 .PP
 This page describes what the installer put on this machine. For the daemon's
 concepts, configuration keys and API, see the online documentation at
@@ -48,11 +48,11 @@ password if sudo asks for one. To drop that prompt, grant the command
 \fINOPASSWD\fR in a \fI/etc/sudoers.d\fR entry. It forwards into the running
 service, so it reports the service as missing when the daemon is down.
 .TP
-.B mosaico-installer \fR[\fIoptions\fR]
-A copy of the installation script, kept at /usr/local/bin/mosaico-installer. Use
+.B mosaicoctl \fR[\fIoptions\fR]
+A copy of the installation script, kept at /usr/local/bin/mosaicoctl. Use
 it to re-run the installation, change the configuration, upgrade to another image
 tag or uninstall. Run
-.B mosaico-installer --help
+.B mosaicoctl --help
 for the full list of options.
 .SH SERVICE MANAGEMENT
 \fBmosaicod.service\fR is an ordinary systemd service, managed with the usual
@@ -192,7 +192,7 @@ are covered separately in \fBQUADLET\fR below.
 .SH CONFIGURATION
 Configuration is passed to the daemon through
 \fI/var/lib/mosaico/secrets/mosaicod.env\fR, written by the installer. Re-running
-\fBmosaico-installer\fR is the supported way to change it; the generated
+\fBmosaicoctl\fR is the supported way to change it; the generated
 PostgreSQL password and master API key are preserved across runs. Hand-made
 edits to that file are preserved too, but only until the next run overwrites
 them.
@@ -216,7 +216,7 @@ To stop and remove the services, their Quadlet units (see \fBQUADLET\fR below),
 the two commands and this man page, leaving all stored data in place:
 .RS 4
 .nf
-sudo mosaico-installer --uninstall
+sudo mosaicoctl --uninstall
 .fi
 .RE
 .PP
@@ -232,7 +232,7 @@ sudo podman volume rm mosaico-postgres-data
 .RE
 .PP
 The exact commands, with the storage directory filled in, are printed by
-\fBmosaico-installer --uninstall\fR when it finishes. Data kept in an external
+\fBmosaicoctl --uninstall\fR when it finishes. Data kept in an external
 object store, or in an external PostgreSQL instance, must be removed there.
 .SH QUADLET
 \fBmosaicod.service\fR and \fBmosaico-postgres.service\fR are not hand-written
@@ -254,7 +254,7 @@ Present only for an embedded database. Defines the Podman container backing
 volume mount.
 .PP
 Hand edits to these files take effect only after \fBsystemctl daemon-reload\fR,
-and are undone the next time \fBmosaico-installer\fR runs, since it regenerates
+and are undone the next time \fBmosaicoctl\fR runs, since it regenerates
 them from scratch; re-running the installer is the supported way to change what
 they contain.
 .PP
