@@ -336,29 +336,14 @@ command_exists() {
 	command -v "$@" > /dev/null 2>&1
 }
 
-# Terminal.app and iTerm2 both support truecolor and the full glyph set, but a
-# Mac reached through a more limited terminal (e.g. a serial console or an old
-# SSH client) is not impossible, so the same fallbacks as the Linux installer
-# apply here too. $TERM is one of the few things SSH does forward, unlike $LANG
-# or $COLORTERM, which reflect the remote shell's locale and env rather than
-# what the display can render.
+# Terminal.app and iTerm2 both support the full glyph set, but a Mac reached
+# through a more limited terminal (e.g. a serial console or an old SSH client)
+# is not impossible, so the same fallback as the Linux installer applies here
+# too. $TERM is one of the few things SSH does forward, unlike $LANG, which
+# reflects the remote shell's locale rather than what the display can render.
 is_limited_console() {
 	case "${TERM:-}" in
 		linux | dumb | "") return 0 ;;
-	esac
-	return 1
-}
-
-# SSH does not forward COLORTERM by default, so its absence proves nothing; only
-# trust the terminals and multiplexers known to set it, or to announce truecolor
-# in $TERM itself, and fall back to a safer color elsewhere.
-supports_truecolor() {
-	is_limited_console && return 1
-	case "${COLORTERM:-}" in
-		truecolor | 24bit) return 0 ;;
-	esac
-	case "${TERM:-}" in
-		*-truecolor | *-direct | xterm-kitty | alacritty) return 0 ;;
 	esac
 	return 1
 }
@@ -376,15 +361,9 @@ setup_colors() {
 		RESET=$(printf '\033[0m')
 		BOLD=$(printf '\033[1m')
 		DIM=$(printf '\033[2m')
-		if supports_truecolor; then
-			BRAND=$(printf '\033[38;2;5;163;198m')
-		elif command_exists tput && [ "$(tput colors 2>/dev/null || echo 0)" -ge 256 ] 2>/dev/null; then
-			# Nearest xterm 256-color match for #05A3C6.
-			BRAND=$(printf '\033[38;5;38m')
-		else
-			# Plain ANSI has no matching hue; bright cyan is the closest safe bet.
-			BRAND=$(printf '\033[96m')
-		fi
+		# Plain ANSI, not the brand's actual hex: it needs no truecolor or 256-color
+		# detection, so it renders the same everywhere, including TERM=linux.
+		BRAND=$(printf '\033[96m')
 		GREEN=$(printf '\033[32m')
 		YELLOW=$(printf '\033[33m')
 		RED=$(printf '\033[31m')
