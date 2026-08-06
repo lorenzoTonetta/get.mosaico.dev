@@ -224,14 +224,14 @@ set -e
 #
 #   $ sudo sh install-mosaico.sh --version 0.6.0
 #
-# The default is 0.6.0-rc, pinned rather than floating: this installer generates a
-# command line and a set of environment variables specific to one mosaicod
-# release, and 0.6 changed all three of the things it depends on: `run` became
-# `server`, the cleanup routine became a subcommand of its own with flags instead
-# of MOSAICOD_CLEANUP_* variables, and the `manage` API key permission was
-# replaced by the granular set. Passing a 0.5.x tag here produces units that
-# cannot start; `latest` currently still points at 0.5.x.
-# See DEFAULT_MOSAICO_VERSION.
+# Image tag to install. The default is 0.6.0-rc.
+# Anything below 0.6 is refused outright rather than installed.
+# `latest` is accepted as given, and so is a commit sha
+# (`sha-<hex>`, or the bare hex): neither can be resolved to a number without
+# pulling the image, so both are taken on trust and not checked at all. Any other
+# tag is refused, a branch name being the case in point: it says nothing about the
+# release behind it and moves under the installation.
+# See DEFAULT_MOSAICO_VERSION and MIN_MOSAICO_VERSION.# See DEFAULT_MOSAICO_VERSION and MIN_MOSAICO_VERSION.
 #
 # --uninstall
 # Stops and removes the Mosaico services, the installed binaries and the man
@@ -278,6 +278,11 @@ RENEWAL_HOOK="$RENEWAL_HOOK_DIR/mosaico.sh"
 # `server` and no `cleanup` subcommand.
 DEFAULT_MOSAICO_VERSION="0.6.0-rc"
 MOSAICO_VERSION="${MOSAICO_VERSION:-$DEFAULT_MOSAICO_VERSION}"
+# The oldest release this installer can set up, checked against --version. Kept
+# apart from DEFAULT_MOSAICO_VERSION on purpose: the default moves with every
+# release, this floor only moves when the generated command lines stop working on
+# an older mosaicod.
+MIN_MOSAICO_VERSION="0.6"
 MOSAICOD_IMAGE_REPO="ghcr.io/mosaico-labs/mosaicod"
 POSTGRES_IMAGE="docker.io/library/postgres:18"
 # mosaicod's own default, and the port clients and the SDK assume.
@@ -480,7 +485,7 @@ usage() {
 	  -y, --yes                       Skip all prompts (unattended install)
 	      --uninstall                 Remove Mosaico, leaving stored data in place
 	      --dry-run                   Print commands without running them
-	      --version <tag>             Install a specific image tag
+	      --version <tag>             Install a specific image tag, $MIN_MOSAICO_VERSION or newer
 	                                  (default: $DEFAULT_MOSAICO_VERSION)
 
 	Network options:
@@ -875,9 +880,49 @@ duration_to_seconds() {
 	esac
 }
 
+# The tag's major and minor as two words, or nothing at all when the tag is not a
+# release number: a patch or prerelease suffix is ignored, so 0.6.0-rc reads as
+# "0 6", a major on its own as "1 0", and `latest` or a commit sha as nothing. The
+# leading `v` is stripped here as well as in parse_args, since MOSAICO_VERSION
+# from the environment does not go through it.
+version_major_minor() {
+	echo "${1#v}" | sed -n \
+		-e 's/^\([0-9][0-9]*\)\.\([0-9][0-9]*\).*$/\1 \2/p' \
+		-e 's/^\([0-9][0-9]*\)$/\1 0/p'
+}
+
+# A tag naming a commit rather than a release: the `sha-<hex>` form the image build
+# produces, or the bare hex.
+is_commit_sha() {
+	echo "${1#sha-}" | grep -Eq '^[0-9a-fA-F]{7,40}$'
+}
+
+check_min_version() {
+	[ "$MOSAICO_VERSION" = "latest" ] && return 0
+
+	_mv="$(version_major_minor "$MOSAICO_VERSION")"
+	if [ -z "$_mv" ]; then
+		is_commit_sha "$MOSAICO_VERSION" && return 0
+		fatal "--version '$MOSAICO_VERSION' is not a release number: pass a version tag ($MIN_MOSAICO_VERSION or newer), 'latest', or a commit sha."
+	fi
+
+	_major="${_mv% *}"
+	_minor="${_mv#* }"
+	_min_major="${MIN_MOSAICO_VERSION%%.*}"
+	_min_minor="${MIN_MOSAICO_VERSION#*.}"
+
+	if [ "$_major" -lt "$_min_major" ] || \
+		{ [ "$_major" -eq "$_min_major" ] && [ "$_minor" -lt "$_min_minor" ]; }; then
+		fatal "--version '$MOSAICO_VERSION' is older than mosaicod $MIN_MOSAICO_VERSION,
+    Pass $MIN_MOSAICO_VERSION or newer, or drop --version to use the default ($DEFAULT_MOSAICO_VERSION)."
+	fi
+}
+
 # Rejects a malformed value as soon as it is seen, so the user is not walked
 # through a whole questionnaire before learning that a flag was wrong.
 validate_flags() {
+	check_min_version
+
 	is_valid_pg_mode "$PG_MODE" || \
 		fatal "invalid --postgres '$PG_MODE' (expected 'embedded' or 'external')."
 
