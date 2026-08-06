@@ -6,10 +6,19 @@ set -e
 # https://get.mosaico.dev. It installs mosaicod (the Mosaico daemon) as a Podman
 # container, together with an embedded PostgreSQL instance in a second container
 # (or, if you already run PostgreSQL, pointed at that instead) and, unless
-# --no-cleanup is given, the data retention routine in a third one: since mosaicod
-# 0.6 that routine is a subcommand of its own rather than part of the daemon.
+# --no-cleanup is given, the data retention routine in a third one
 #
-# Not meant for a production deployment: see https://docs.mosaico.dev for that.
+# In particular:
+#
+# - Do not run this inside a macOS virtual machine. Podman needs a Linux virtual
+#   machine to run containers at all, so on a virtualised Mac that machine is a
+#   guest inside a guest: nested virtualization, which most Mac hypervisors do
+#   not expose to their guests, and which is unreliable where they do. Expect
+#   `podman machine init` or `podman machine start` to fail, or the machine to
+#   come up and behave erratically. Install on the host instead.
+#
+# Both are printed at the start of a run, so they are read before the install
+# rather than after it.
 #
 # How this differs from the Linux installer
 # ==============================================================================
@@ -2275,6 +2284,17 @@ print_logo() {
 	echo "  ${BRAND}${ARROW}${RESET}  System detected: ${BRAND}${BOLD}macOS${RESET}"
 }
 
+print_disclaimer() {
+	section "Before you begin"
+	echo "  ${YELLOW}!${RESET} ${BOLD}Do not run this inside a macOS virtual machine.${RESET}"
+	echo "    macOS cannot run Linux containers itself, so podman runs them in a Linux"
+	echo "    virtual machine of its own. On a virtualised Mac that machine is a guest"
+	echo "    inside a guest, which needs nested virtualization: most Mac hypervisors"
+	echo "    do not expose it, and where they do it is unreliable. Expect the podman"
+	echo "    machine to fail to start, or to start and behave erratically. Install on"
+	echo "    the host instead."
+}
+
 # --- Uninstall ---
 
 # Reads a single key from the install record, or nothing when the file or the key
@@ -2473,6 +2493,7 @@ print_success() {
 do_install() {
 	if [ "$NON_INTERACTIVE" -eq 1 ]; then
 		print_logo
+		print_disclaimer
 		check_mosaico_version
 		validate_non_interactive
 	else
@@ -2480,8 +2501,9 @@ do_install() {
 			fatal "no terminal available for interactive setup. Re-run with -y and the required flags (see --help)."
 		fi
 		print_logo
-		check_mosaico_version
+		print_disclaimer
 		echo
+		check_mosaico_version
 		configure_interactive
 	fi
 
