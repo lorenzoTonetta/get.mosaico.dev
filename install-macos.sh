@@ -239,6 +239,19 @@ set -e
 # change it when something else already holds that port. Not to be confused with
 # --pg-port, which is the database's.
 #
+# --host <ADDRESS>
+# Address of this Mac the port above is published on. Default: 127.0.0.1, which
+# keeps Mosaico reachable from this Mac alone. Pass 0.0.0.0 to publish it on every
+# address, so that other machines on the network can reach it, or a single address
+# to publish it on one interface only. An IPv6 literal has to be given in
+# brackets, as in [::1]. Not to be confused with --pg-host, which is the
+# database's.
+#
+# This is the host side of the port publication and nothing else: inside the
+# container mosaicod always binds 0.0.0.0, because a published port is DNAT'd to
+# the container's own address, which a process listening on the container's
+# loopback never sees. See run_mosaicod.
+#
 # --platform <PLATFORM>
 # Passed to `podman run` as --platform for the mosaicod container, for example
 # linux/amd64. Only useful on Apple Silicon and only when the tag being installed
@@ -305,6 +318,9 @@ MOSAICOD_IMAGE_REPO="ghcr.io/mosaico-labs/mosaicod"
 POSTGRES_IMAGE="docker.io/library/postgres:18"
 # mosaicod's own default, and the port clients and the SDK assume.
 DEFAULT_MOSAICOD_PORT="6726"
+# The address of this Mac that port is published on. The loopback by default: an
+# installation is not put on the network unless it is asked for.
+DEFAULT_MOSAICOD_HOST="127.0.0.1"
 MOSAICOD_CONTAINER="mosaicod"
 POSTGRES_CONTAINER="mosaico-postgres"
 CLEANUP_CONTAINER="mosaico-cleanup"
@@ -453,6 +469,7 @@ setup_colors
 NON_INTERACTIVE="$(to_bool "${NON_INTERACTIVE:-0}")"
 
 MOSAICOD_PORT="$DEFAULT_MOSAICOD_PORT"; MOSAICOD_PORT_SET=0
+MOSAICOD_HOST="$DEFAULT_MOSAICOD_HOST"; MOSAICOD_HOST_SET=0
 
 PG_MODE="embedded";           PG_MODE_SET=0
 PG_HOST="";                   PG_HOST_SET=0
@@ -510,6 +527,10 @@ usage() {
 	      --port <port>               Port mosaicod serves on, published on this
 	                                  Mac under the same number
 	                                  (default: $DEFAULT_MOSAICOD_PORT)
+	      --host <address>            Address that port is published on. Pass
+	                                  0.0.0.0 to publish it on every address, so
+	                                  the network can reach it
+	                                  (default: $DEFAULT_MOSAICOD_HOST, this Mac only)
 
 	Database options:
 	      --postgres <embedded|external>
@@ -620,6 +641,13 @@ parse_args() {
 			--port|--mosaicod-port)
 				require_value "$@"; MOSAICOD_PORT="$2"; MOSAICOD_PORT_SET=1; shift ;;
 			--port=*|--mosaicod-port=*) MOSAICOD_PORT="${1#*=}"; MOSAICOD_PORT_SET=1 ;;
+
+			# --host is the address the port is published on, not the database's:
+			# that one is --pg-host.
+			--host|--bind|--bind-address|--listen-address)
+				require_value "$@"; MOSAICOD_HOST="$2"; MOSAICOD_HOST_SET=1; shift ;;
+			--host=*|--bind=*|--bind-address=*|--listen-address=*)
+				MOSAICOD_HOST="${1#*=}"; MOSAICOD_HOST_SET=1 ;;
 
 			--machine) require_value "$@"; MACHINE="$2"; shift ;;
 			--machine=*) MACHINE="${1#*=}" ;;
@@ -809,6 +837,32 @@ is_valid_port() {
 	echo "$1" | grep -Eq '^[1-9][0-9]{0,4}$' && [ "$1" -le 65535 ]
 }
 
+# Stricter than is_valid_host: a published port is bound to an address, so a name
+# is not accepted here even though PostgreSQL's host may be one. IPv6 literals need
+# brackets, which is also how Podman wants them in a port mapping.
+is_valid_bind_address() {
+	case "$1" in
+		\[*\]) echo "$1" | grep -Eq '^\[[0-9A-Fa-f:]+\]$' && return 0
+		       return 1 ;;
+	esac
+	echo "$1" | grep -Eq '^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$'
+}
+
+# The wildcards: every address of this Mac, so the service is on the network.
+is_any_address() {
+	case "$1" in
+		0.0.0.0|"[::]") return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+is_loopback_address() {
+	case "$1" in
+		127.*|"[::1]") return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
 is_valid_endpoint() {
 	case "$1" in
 		http://?*|https://?*) return 0 ;;
@@ -922,6 +976,9 @@ validate_flags() {
 
 	if [ "$MOSAICOD_PORT_SET" -eq 1 ] && ! is_valid_port "$MOSAICOD_PORT"; then
 		fatal "--port '$MOSAICOD_PORT' is not a valid port number."
+	fi
+	if [ "$MOSAICOD_HOST_SET" -eq 1 ] && ! is_valid_bind_address "$MOSAICOD_HOST"; then
+		fatal "--host '$MOSAICOD_HOST' is not a valid address: pass an IPv4 address such as 127.0.0.1 (this Mac only) or 0.0.0.0 (every address), or an IPv6 literal in brackets, as in [::1]."
 	fi
 
 	if [ "$PG_HOST_SET" -eq 1 ] && ! is_valid_host "$PG_HOST"; then
@@ -1214,6 +1271,19 @@ configure_interactive() {
 		info "Port $MOSAICOD_PORT taken from the command line."
 	fi
 
+	if [ "$MOSAICOD_HOST_SET" -eq 0 ]; then
+		echo "  That port is published on this address alone. The default, $DEFAULT_MOSAICOD_HOST,"
+		echo "  keeps Mosaico reachable from this Mac only."
+		echo "  ${BOLD}Enter 0.0.0.0 to publish it on every address${RESET}, so that other machines"
+		echo "  on the network can reach it."
+		MOSAICOD_HOST="$(ask_required "Address to publish mosaicod on" is_valid_bind_address \
+			"Enter an IPv4 address such as 127.0.0.1 or 0.0.0.0, or an IPv6 literal in brackets, as in [::1]." \
+			"$MOSAICOD_HOST")"
+		echo
+	else
+		info "Address $MOSAICOD_HOST taken from the command line."
+	fi
+
 	if [ "$ENABLE_TLS_SET" -eq 0 ]; then
 		echo "  Certificates are not obtained for you on macOS: you supply the"
 		echo "  certificate chain and the private key."
@@ -1319,12 +1389,26 @@ derive_pg_container_host() {
 	esac
 }
 
+# TLS is about clients on other machines, so a certificate buys nothing while the
+# port is published on the loopback alone. Reported rather than refused: a name
+# that resolves to this Mac is a legitimate way to reach a local installation.
+warn_tls_bind_mismatch() {
+	[ "$ENABLE_TLS" -eq 1 ] || return 0
+	is_loopback_address "$MOSAICOD_HOST" || return 0
+	warn "TLS is enabled for '$DOMAIN', but the port is published on $MOSAICOD_HOST, so no other machine can reach it. Pass --host 0.0.0.0 to publish it on every address."
+}
+
 print_summary() {
 	echo
 	echo "${DIM}--------------------------------------------------------------------------------${RESET}"
 	echo "${BOLD}Configuration Summary:${RESET}"
 	echo "  - Podman machine  : $MACHINE"
 	echo "  - Port            : $MOSAICOD_PORT"
+	if is_any_address "$MOSAICOD_HOST"; then
+		echo "  - Published on    : $MOSAICOD_HOST (every address of this Mac, reachable from the network)"
+	else
+		echo "  - Published on    : $MOSAICOD_HOST"
+	fi
 	if [ "$PG_MODE" = "embedded" ]; then
 		echo "  - Database        : Embedded PostgreSQL container (created and managed here)"
 	else
@@ -1779,6 +1863,7 @@ PG_DB=$PG_DB"
 	PLATFORM=macos
 	MOSAICO_VERSION=$MOSAICO_VERSION
 	MOSAICOD_PORT=$MOSAICOD_PORT
+	MOSAICOD_HOST=$MOSAICOD_HOST
 	MACHINE=$MACHINE
 	BIN_DIR=$BIN_DIR
 	$pg_record
@@ -1965,11 +2050,13 @@ run_mosaicod() {
 	step_line "Creating the $MOSAICOD_CONTAINER container"
 	recreate_container "$MOSAICOD_CONTAINER"
 
-	# `server` exists from 0.6 on; 0.5 images take `run` instead. --host is mandatory:
-	# mosaicod binds the loopback by default, and a published port is DNAT'd to the
-	# container's address, which a process on 127.0.0.1 inside it never sees. --tls
-	# and --api-key are switches, not configuration keys: without them the daemon
-	# ignores the TLS material and the keys in the environment file.
+	# `server` exists from 0.6 on; 0.5 images take `run` instead. --host 0.0.0.0 is
+	# mandatory and is not $MOSAICOD_HOST: mosaicod binds the loopback by default, and
+	# a published port is DNAT'd to the container's address, which a process on
+	# 127.0.0.1 inside it never sees. What the operator chose is the host side of the
+	# -p mapping below. --tls and --api-key are switches, not configuration keys:
+	# without them the daemon ignores the TLS material and the keys in the environment
+	# file.
 	_exec_args="server --host 0.0.0.0 --port $MOSAICOD_PORT"
 	[ "$ENABLE_TLS" -eq 1 ] && _exec_args="$_exec_args --tls"
 	[ "$API_KEY" -eq 1 ] && _exec_args="$_exec_args --api-key"
@@ -1987,7 +2074,7 @@ run_mosaicod() {
 		--network $PODMAN_NETWORK \
 		--restart=always \
 		--env-file '$MOSAICOD_ENV_FILE' \
-		-p $MOSAICOD_PORT:$MOSAICOD_PORT \
+		-p $MOSAICOD_HOST:$MOSAICOD_PORT:$MOSAICOD_PORT \
 		$_mounts $_platform_arg \
 		$MOSAICOD_IMAGE_REPO:$MOSAICO_VERSION \
 		$_exec_args"
@@ -2448,18 +2535,17 @@ print_success() {
 	echo
 	echo "${GREEN}${BOLD}  Mosaico is up and running!${RESET}"
 	echo
-	echo "  ${BRAND}${ARROW}${RESET}  Local:    $scheme://127.0.0.1:$MOSAICOD_PORT"
-
-	# With TLS only the certified name is advertised: a client connecting to a bare
+	# One endpoint, the one the port was actually published on: the addresses this Mac
+	# happens to hold say nothing about where the service answers. With TLS the
+	# certified name is the only one advertised, since a client connecting to a bare
 	# address would fail certificate validation.
 	if [ "$ENABLE_TLS" -eq 1 ]; then
-		echo "  ${BRAND}${ARROW}${RESET}  Domain:   $scheme://$DOMAIN:$MOSAICOD_PORT"
+		echo "  ${BRAND}${ARROW}${RESET}  Endpoint: $scheme://$DOMAIN:$MOSAICOD_PORT"
+	elif is_any_address "$MOSAICOD_HOST"; then
+		echo "  ${BRAND}${ARROW}${RESET}  Endpoint: $scheme://127.0.0.1:$MOSAICOD_PORT"
+		echo "     ${DIM}Published on $MOSAICOD_HOST: reachable on every address of this Mac.${RESET}"
 	else
-		# Whether these are reachable from other machines depends on the address
-		# Podman's forwarder binds, hence the qualifier in the line itself.
-		for ip in $(local_addresses); do
-			echo "  ${BRAND}${ARROW}${RESET}  Network:  $scheme://$ip:$MOSAICOD_PORT ${DIM}(if Podman's port forwarder is not bound to loopback only)${RESET}"
-		done
+		echo "  ${BRAND}${ARROW}${RESET}  Endpoint: $scheme://$MOSAICOD_HOST:$MOSAICOD_PORT"
 	fi
 
 	if [ "$PG_MODE" = "external" ]; then
@@ -2475,9 +2561,12 @@ print_success() {
 		echo "     ${DIM}Full key: $SECRETS_DIR/master_api_key${RESET}"
 	elif [ "$API_KEY" -eq 0 ]; then
 		echo
-		echo "  ${YELLOW}Note:${RESET} API keys are not required: anyone who can reach port"
-		echo "        $MOSAICOD_PORT can read and write data. Re-run the installer with"
-		echo "        --api-key to require them."
+		# "No API key" means an unauthenticated endpoint, so the note names the address
+		# it was published on: on the loopback that is this Mac, on 0.0.0.0 the whole
+		# network.
+		echo "  ${YELLOW}Note:${RESET} API keys are not required: anyone who can reach"
+		echo "        $MOSAICOD_HOST:$MOSAICOD_PORT can read and write data. Re-run the"
+		echo "        installer with --api-key to require them."
 	fi
 
 	if [ "$ENABLE_TLS" -eq 1 ]; then
@@ -2556,6 +2645,7 @@ do_install() {
 
 	# Before the summary, which reports the host the container will use.
 	derive_pg_container_host
+	warn_tls_bind_mismatch
 	print_summary
 	[ "$NON_INTERACTIVE" -eq 1 ] || confirm_summary
 

@@ -69,9 +69,13 @@ The same applies to \fBmosaico-postgres.service\fR when the database is
 embedded. The systemd journal covers what mosaicod itself logs; for the raw
 output of the underlying Podman container, see \fBQUADLET\fR below.
 .PP
-The daemon listens on every address of the host, on the port recorded as
-\fBMOSAICOD_PORT\fR in \fI/var/lib/mosaico/install.conf\fR. That is 6726, the
-port clients and the SDK assume, unless the installation was given \fB--port\fR.
+The daemon serves on the port recorded as \fBMOSAICOD_PORT\fR in
+\fI/var/lib/mosaico/install.conf\fR. That is 6726, the port clients and the SDK
+assume, unless the installation was given \fB--port\fR. That port is published
+on the address recorded as \fBMOSAICOD_HOST\fR in the same file: 127.0.0.1,
+which is this machine only, unless the installation was given \fB--host\fR.
+\fB--host 0.0.0.0\fR publishes it on every address of the host instead, which is
+what makes Mosaico reachable from the network.
 .SH DATABASE
 mosaicod keeps its metadata in PostgreSQL, reached through the
 \fBMOSAICOD_DB_URL\fR connection string in
@@ -159,14 +163,14 @@ mosaicod api-key revoke \fIfingerprint\fR
 .RE
 .PP
 Without that request the daemon accepts unauthenticated clients on every
-address of the host.
+address the port was published on.
 .SH FILES
 .TP
 .I /var/lib/mosaico/install.conf
 Non-secret record of the choices made at install time, including the port the
-daemon serves on, the storage backend and the storage directory in use, the
-database mode and, for an external database, its host, port, database name and
-role.
+daemon serves on and the address it is published on, the storage backend and
+the storage directory in use, the database mode and, for an external database,
+its host, port, database name and role.
 .TP
 .I /var/lib/mosaico/secrets
 Generated secrets, readable by root only: the daemon environment file, the TLS
